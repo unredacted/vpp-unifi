@@ -117,7 +117,17 @@ Operational guidance for running VPP under PacketFrame's supervision
    anyway) and `publish=false` (build-and-verify only).
 4. Consumers upgrade on their own schedule — that separation is the
    point: VPP artifacts change maybe twice a year, consumer releases
-   monthly, and rollback must be independent in both directions.
+   monthly, and rollback must be independent in both directions. Old
+   tags stay published forever so rollback is always a re-download.
+5. Consumers that generate code against `vpp-api-json.tar.gz` bind to
+   a release, not to this repo: packetframe vendors the bundle plus
+   the release's `manifest.json` and byte-checks both against the tag
+   in its own CI, and its CRC handshake refuses any running VPP whose
+   wire format disagrees — so publishing a new tag here changes
+   nothing for a deployed fleet until the consumer re-vendors and
+   decides, from its codegen diff, whether the bump is paperwork or a
+   breaking wire-format change. Procedure and compatibility model:
+   packetframe's `crates/modules/vpp-offload/vpp-api/README.md`.
 
 ## License
 
