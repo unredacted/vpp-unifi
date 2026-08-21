@@ -94,15 +94,20 @@ systemctl mask vpp.service
 #    request on a 64 GB box, applied at install time.
 cd vpp && VPP_INSTALL_SKIP_SYSCTL=1 apt-get install -y ./*.deb
 
-# 3. DELETE the sysctl file the deb just shipped. The env var above
-#    skips `sysctl --system` at INSTALL time only — the file itself
-#    is package content, and systemd re-applies it on EVERY BOOT.
-#    Left in place it bricked a 64 GB EFG on 2026-08-21: the install
-#    verified clean, and the next reboot reserved ~all RAM into
-#    512 MB hugepages before userspace could configure an interface.
-#    Recovery required Recovery Mode + factory reset. The install is
-#    not done until this file is gone:
-rm /etc/sysctl.d/80-vpp.conf
+# 3. VERIFY no boot-time hugepage sysctl landed. The env var above
+#    skips `sysctl --system` at INSTALL time only — upstream's deb
+#    also SHIPS /etc/sysctl.d/80-vpp.conf, which systemd re-applies
+#    on EVERY BOOT. Left in place it bricked a 64 GB EFG on
+#    2026-08-21: the install verified clean, and the next reboot
+#    reserved ~all RAM into 512 MB hugepages before userspace could
+#    configure an interface; recovery required Recovery Mode + a
+#    factory reset. Releases built here after 2026-08-21 remove the
+#    file from the vpp .deb at packaging (the repo's one deviation
+#    from upstream — recorded in manifest.json and the release
+#    notes), so for them the rm is a no-op and the check is the
+#    point. For any artifact downloaded earlier, this step is what
+#    prevents the brick. Either way: not done until it prints clean.
+rm -f /etc/sysctl.d/80-vpp.conf
 ls /etc/sysctl.d/ | grep -i vpp && echo "STILL PRESENT — do not reboot" \
   || echo "clean"
 
@@ -146,5 +151,10 @@ Operational guidance for running VPP under PacketFrame's supervision
 
 The build scripts and configuration in this repo are
 GPL-3.0-or-later (see [LICENSE](LICENSE)). The **published artifacts
-are unmodified upstream VPP**, which is licensed Apache-2.0 by the
-fd.io project; this repo adds no code to them.
+are built from unmodified upstream VPP source**, licensed Apache-2.0
+by the fd.io project; this repo adds no code to them and applies no
+patches. There is exactly ONE packaging deviation, made after it
+bricked a router: `etc/sysctl.d/80-vpp.conf` is removed from the
+`vpp` .deb (see install trap 3 above; recorded in each release's
+`manifest.json`). Anything beyond that single removal would be a
+fork, and this repo refuses to become one.

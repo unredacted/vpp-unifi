@@ -453,6 +453,50 @@ jobs:
           ls -la /out/debs
           [ -n "$(ls -A /out/debs)" ] || { echo "::error::no .debs produced"; exit 1; }
 
+      # The ONE packaging deviation from upstream (recorded in the
+      # manifest and release notes; the source is still unmodified).
+      #
+      # upstream's vpp .deb ships /etc/sysctl.d/80-vpp.conf with
+      # vm.nr_hugepages=1024, written for 2 MB pages. The install-time
+      # trap is survivable (VPP_INSTALL_SKIP_SYSCTL=1 skips the
+      # postinst's `sysctl --system`) — but the FILE is package
+      # content, systemd re-applies it on EVERY boot, and on UniFi's
+      # 64K-page kernels (512 MB default hugepage) it is a 512 GiB
+      # request. On 2026-08-21 it bricked a 64 GB EFG on the first
+      # post-install reboot: ~all RAM reserved before userspace could
+      # configure an interface; recovery took a factory reset.
+      # Hugepage sizing on the fleet belongs to the consumer
+      # (packetframe's vpp-offload) at attach, never to boot config.
+      #
+      # The plain `rm` (no -f) is deliberate: if upstream stops
+      # shipping the file, this step fails loudly and gets removed,
+      # rather than silently guarding against nothing.
+      - name: Remove the boot-time hugepage sysctl from the vpp .deb
+        run: |
+          set -euo pipefail
+          vpp_deb=$(find /out/debs -maxdepth 1 -name 'vpp_*.deb')
+          [ -n "$vpp_deb" ] || { echo "::error::vpp_*.deb not found to defuse"; exit 1; }
+          rm -rf /tmp/defuse
+          dpkg-deb -R "$vpp_deb" /tmp/defuse
+          rm /tmp/defuse/etc/sysctl.d/80-vpp.conf
+          rmdir --ignore-fail-on-non-empty /tmp/defuse/etc/sysctl.d
+          # A conffiles entry pointing at a file the package no longer
+          # contains makes dpkg unhappy at install; md5sums likewise.
+          for meta in conffiles md5sums; do
+            f="/tmp/defuse/DEBIAN/$meta"
+            if [ -f "$f" ]; then
+              sed -i '\#etc/sysctl\.d/80-vpp\.conf#d' "$f"
+              if grep -q '80-vpp' "$f"; then
+                echo "::error::DEBIAN/$meta still references 80-vpp.conf after defusing"; exit 1
+              fi
+            fi
+          done
+          dpkg-deb -b --root-owner-group /tmp/defuse "$vpp_deb"
+          if dpkg-deb -c "$vpp_deb" | grep -q '80-vpp\.conf'; then
+            echo "::error::80-vpp.conf still present after defusing"; exit 1
+          fi
+          echo "defused: $vpp_deb ships no boot-time hugepage sysctl"
+
       # Fast smoke test on the staging tree so an obviously broken
       # build fails before we spend time packaging. It is NOT the
       # gate — the staging tree has every build dependency present and
@@ -663,6 +707,7 @@ jobs:
             '{vpp_ref:$ref, vpp_commit:$commit, platform:$platform, gateway:$gateway,
               distro:$distro, arch:$arch, octeon_pmd:$pmd,
               patches:"none (upstream verbatim)",
+              packaging:"etc/sysctl.d/80-vpp.conf removed from the vpp .deb — applied at every boot, its vm.nr_hugepages=1024 is a 512 GiB hugepage request on 64K-page kernels (bricked a 64 GB EFG 2026-08-21); hugepage sizing belongs to the consumer at attach",
               built_by:$built_by, workflow_run:$run}' > manifest.json
           # Flat names: `gh release create` uploads these as flat
           # assets, so a `debs/` prefix would make `sha256sum -c`
@@ -745,6 +790,13 @@ jobs:
           DEBIAN_FRONTEND=noninteractive VPP_INSTALL_SKIP_SYSCTL=1 \
             apt-get install -y "${debs[@]}"
           command -v vpp || { echo "::error::no vpp on PATH after install"; exit 1; }
+          # The 2026-08-21 landmine: the deb must NOT have planted the
+          # boot-time hugepage sysctl the build step removed. This is
+          # the check that fails if the defuse step ever regresses.
+          if [ -e /etc/sysctl.d/80-vpp.conf ]; then
+            echo "::error::/etc/sysctl.d/80-vpp.conf present after install — the boot-time 512 GiB hugepage landmine shipped"; exit 1
+          fi
+          echo "no boot-time hugepage sysctl installed — correct"
 
       - name: Verify the INSTALLED binary
         run: |
@@ -848,6 +900,8 @@ jobs:
             "Unmodified upstream VPP \`${{ matrix.ref }}\` (\`$commit\`), built for Debian ${{ matrix.distro }} ${{ matrix.arch }} — the combination UniFi OS on the \`${{ matrix.gateway }}\` can install." \
             "" \
             "Variant: \`${{ matrix.platform }}\` · Octeon PMD: \`$pmd\` · No patches applied." \
+            "" \
+            "**One packaging deviation** (the only one): \`etc/sysctl.d/80-vpp.conf\` is removed from the \`vpp\` .deb. Applied at every boot, its \`vm.nr_hugepages=1024\` (written for 2 MB pages) is a 512 GiB hugepage request on 64K-page UniFi kernels — it bricked a 64 GB EFG on 2026-08-21. Hugepage sizing belongs to the consumer at attach; see the README's install section." \
             "" \
             "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}." \
             "" \
