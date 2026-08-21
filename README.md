@@ -80,7 +80,8 @@ gh release download vpp-v26.06-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D
 sha256sum -c vpp/SHA256SUMS --ignore-missing
 ```
 
-Four traps, every one of which has cost real time on a router:
+Five traps, every one of which has cost real time on a router —
+the fifth cost a factory reset:
 
 ```sh
 # 1. Mask the service BEFORE install: the deb's postinst starts VPP.
@@ -93,10 +94,22 @@ systemctl mask vpp.service
 #    request on a 64 GB box, applied at install time.
 cd vpp && VPP_INSTALL_SKIP_SYSCTL=1 apt-get install -y ./*.deb
 
-# 3. /tmp is noexec on UniFi OS — stage anything executable under
+# 3. DELETE the sysctl file the deb just shipped. The env var above
+#    skips `sysctl --system` at INSTALL time only — the file itself
+#    is package content, and systemd re-applies it on EVERY BOOT.
+#    Left in place it bricked a 64 GB EFG on 2026-08-21: the install
+#    verified clean, and the next reboot reserved ~all RAM into
+#    512 MB hugepages before userspace could configure an interface.
+#    Recovery required Recovery Mode + factory reset. The install is
+#    not done until this file is gone:
+rm /etc/sysctl.d/80-vpp.conf
+ls /etc/sysctl.d/ | grep -i vpp && echo "STILL PRESENT — do not reboot" \
+  || echo "clean"
+
+# 4. /tmp is noexec on UniFi OS — stage anything executable under
 #    /root, not /tmp.
 
-# 4. Package REMOVAL unbinds VFs from vfio-pci: re-bind after every
+# 5. Package REMOVAL unbinds VFs from vfio-pci: re-bind after every
 #    purge/upgrade before expecting VPP to attach the device.
 ```
 
