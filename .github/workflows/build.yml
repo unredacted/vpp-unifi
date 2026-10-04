@@ -198,6 +198,32 @@ jobs:
       run:
         shell: bash
     steps:
+      # Debian bullseye left LTS on 2026-08-31 and moved to
+      # archive.debian.org. deb.debian.org still serves bullseye-security
+      # INDICES naming the final versions, but the pool files behind
+      # them are gone, so installs 404 (seen 2026-10-04 on
+      # perl-modules-5.32 and libc-dev-bin, both under build-essential).
+      # Repointing apt before the first update covers every apt call in
+      # this job, including the one VPP's `make install-dep` runs on its
+      # own. Same suites, same packages: only where apt fetches them
+      # changes. verify-package repeats this step; other distros skip it.
+      - name: Point apt at archive.debian.org (bullseye is EOL)
+        if: matrix.distro == 'bullseye'
+        shell: sh
+        run: |
+          set -eu
+          cat > /etc/apt/sources.list <<'EOF'
+          deb http://archive.debian.org/debian bullseye main
+          deb http://archive.debian.org/debian bullseye-updates main
+          deb http://archive.debian.org/debian-security bullseye-security main
+          EOF
+          # Rewriting sources.list helps only if nothing else still
+          # points apt at the dead pool.
+          if grep -rs 'deb\.debian\.org' /etc/apt/sources.list.d; then
+            echo "::error::an apt source outside sources.list still uses deb.debian.org"
+            exit 1
+          fi
+
       - name: Container prerequisites
         shell: sh
         run: |
@@ -742,6 +768,23 @@ jobs:
       run:
         shell: bash
     steps:
+      # Same step as in `build`, for the same reason: this job's apt
+      # resolves the .debs' dependencies against bullseye-security too.
+      - name: Point apt at archive.debian.org (bullseye is EOL)
+        if: matrix.distro == 'bullseye'
+        shell: sh
+        run: |
+          set -eu
+          cat > /etc/apt/sources.list <<'EOF'
+          deb http://archive.debian.org/debian bullseye main
+          deb http://archive.debian.org/debian bullseye-updates main
+          deb http://archive.debian.org/debian-security bullseye-security main
+          EOF
+          if grep -rs 'deb\.debian\.org' /etc/apt/sources.list.d; then
+            echo "::error::an apt source outside sources.list still uses deb.debian.org"
+            exit 1
+          fi
+
       # Deliberately a FRESH container with no build dependencies: the
       # question this job answers is "does what we publish install and
       # run on a stock fleet box", which the build tree cannot answer.
