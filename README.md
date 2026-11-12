@@ -96,8 +96,17 @@ gh release download vpp-v26.06-8a556fbe1-octeon9-trixie-arm64 -R unredacted/vpp-
 # UniFi OS 5.x (Debian 11):
 gh release download vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
 
-sha256sum -c vpp/SHA256SUMS --ignore-missing
+# SHA256SUMS lists bare file names: check from inside vpp/.
+(cd vpp && sha256sum -c --ignore-missing SHA256SUMS)
 ```
+
+GitHub stores a `~` in an asset name as `.`. Releases built past a tag
+(package versions like `26.06.0-16~g8a556fbe1`) are named the way GitHub
+stores them, so `SHA256SUMS` matches the downloaded files. The two
+releases published before that rename (`vpp-v26.06-8a556fbe1-octeon9-*`,
+2026-11-12) list `~` names; check them with
+`(cd vpp && sed 's/~/./' SHA256SUMS | sha256sum -c --ignore-missing)`.
+The bytes are the same; only the names differ.
 
 Five traps, every one of which has cost real time on a router —
 the fifth cost a factory reset:
@@ -156,8 +165,12 @@ Operational guidance for running VPP under PacketFrame's supervision
    the target distro (~45 min), verifies, and publishes the new tag.
 3. The workflow skips entirely if the exact artifact is already
    published (the tag is a function of the pin), so accidental
-   triggers cost seconds. `workflow_dispatch` offers `force` (rebuild
-   anyway) and `publish=false` (build-and-verify only).
+   triggers cost seconds. A published release is never rebuilt
+   because `build.yml` changed: consumers pin its assets by sha256,
+   and replacing them would break every pin. `workflow_dispatch`
+   offers `force` (rebuild anyway, replacing the release's assets, so
+   consumers must re-pin) and `publish=false` (build-and-verify
+   only).
 4. Consumers upgrade on their own schedule — that separation is the
    point: VPP artifacts change maybe twice a year, consumer releases
    monthly, and rollback must be independent in both directions. Old

@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Rebuild even if the pinned artifact is already published'
+        description: 'Rebuild even if published, REPLACING its assets (new hashes under the same tag)'
         type: boolean
         default: false
       publish:
@@ -74,19 +74,19 @@ jobs:
           only='${{ inputs.pin }}'
 
           # The tag is derived from each PIN alone, but the artifact is
-          # a function of the pin AND this workflow's build config —
-          # which disabled-driver overrides made materially true. So a
-          # workflow change that alters what gets built would otherwise
-          # hit the existence check and skip, leaving the fleet on an
-          # artifact built from superseded config, under a tag implying
-          # otherwise. Detect it and rebuild everything.
+          # a function of the pin AND this workflow's build config. A
+          # push that changes this file is detected, but a published
+          # release is NOT rebuilt for it: consumers pin each asset by
+          # sha256 (unredacted/ansible-edge-network's recovery playbook
+          # does), so replacing the assets under a tag breaks every pin
+          # with no trace of why — what a re-upload under the same
+          # version did on 2026-10-04. A published release still matches
+          # its own SHA256SUMS and manifest, and its manifest's built_by
+          # names the workflow commit that built it.
           #
-          # Cost note against this file's own cost-control rationale:
-          # the workflow path is already a trigger, so this only fires
-          # on a push that edited it — a few times a year in practice.
-          # It cannot distinguish a comment edit from a driver-list
-          # change, and rebuilding needlessly is far cheaper than
-          # silently shipping a stale artifact.
+          # When a workflow change alters what gets built, move the pin
+          # (a new commit names a new tag), or dispatch with `force` to
+          # replace the release deliberately and re-pin consumers.
           wf_changed=false
           if [ '${{ github.event_name }}' = 'push' ] && \
              [ -n "$BEFORE" ] && \
@@ -153,8 +153,7 @@ jobs:
               needs_build=true
               echo "  not yet published; building"
             elif [ "$wf_changed" = "true" ]; then
-              needs_build=true
-              echo "::notice::$tag exists, but this push changed the build workflow — rebuilding and replacing it."
+              echo "::warning::$tag is already published and this push changed the build workflow; it is NOT rebuilt, so consumers' sha256 pins stay valid. If the change alters what gets built, move the pin or dispatch with force (replaces the assets)."
             else
               echo "::notice::$tag is already published; nothing to build. Re-run with force to rebuild."
             fi
@@ -510,8 +509,18 @@ jobs:
           make pkg-deb
           mkdir -p /out/debs
           find build-root -maxdepth 1 -name '*.deb' -exec cp {} /out/debs/ \;
-          ls -la /out/debs
           [ -n "$(ls -A /out/debs)" ] || { echo "::error::no .debs produced"; exit 1; }
+          # GitHub replaces `~` in release asset names with `.`. A build
+          # past a tag is versioned like 26.06.0-16~g8a556fbe1, so name
+          # the files as GitHub will store them: SHA256SUMS then names
+          # files that exist after a download, and `sha256sum -c` works.
+          # Only the file name changes; dpkg reads the package version
+          # from the control file.
+          for f in /out/debs/*~*; do
+            [ -e "$f" ] || continue
+            mv -v -- "$f" "${f//\~/.}"
+          done
+          ls -la /out/debs
 
       # The ONE packaging deviation from upstream (recorded in the
       # manifest and release notes; the source is still unmodified).
@@ -991,14 +1000,18 @@ jobs:
           # Flat asset names, matching SHA256SUMS — see the manifest
           # step's note on why that matters after a download.
           #
-          # The tag can already exist: resolve rebuilds when the build
-          # workflow itself changed, since the artifact depends on this
-          # file's config and not on the pin alone. Update in place
-          # (`--clobber`) rather than delete-and-recreate, so there is
-          # no window where the release consumers point operators at
-          # does not exist.
+          # The tag can already exist only on a `force` dispatch (resolve
+          # rebuilds nothing else that is published): refuse otherwise,
+          # since replacing assets breaks every consumer's sha256 pin.
+          # With force, update in place (`--clobber`) rather than
+          # delete-and-recreate, so there is no window where the release
+          # consumers point operators at does not exist.
           if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
-            echo "::notice::$tag exists — replacing its assets"
+            if [ '${{ inputs.force }}' != 'true' ]; then
+              echo "::error::$tag is already published; refusing to replace its assets without a force dispatch"
+              exit 1
+            fi
+            echo "::warning::$tag exists — replacing its assets (force): consumers pinning its sha256 must re-pin"
             gh release edit "$tag" --repo '${{ github.repository }}' \
               --title "$title" --notes "$notes"
             gh release upload "$tag" --repo '${{ github.repository }}' --clobber \
