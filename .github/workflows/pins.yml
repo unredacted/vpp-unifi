@@ -19,6 +19,9 @@ on:
   push:
     branches: [main]
     paths: ['pins/**', '.github/workflows/pins.yml']
+  # vpp-upstream.yml dispatches this on the PRs it opens: a PR opened with
+  # GITHUB_TOKEN does not trigger `pull_request`.
+  workflow_dispatch:
 
 permissions:
   contents: read
