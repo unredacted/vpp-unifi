@@ -27,7 +27,14 @@ the exact upstream commit.
 
 | Gateway | SoC | Platform | Pin | Status |
 |---|---|---|---|---|
-| EFG (Enterprise Fortress Gateway) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) | validated end to end on a reference EFG (full-table FIB sync + readback verify) |
+| EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) → `vpp-v26.06-octeon9-bullseye-arm64` | validated end to end on a reference EFG (full-table FIB sync + readback verify) |
+| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.06-octeon9-trixie-arm64` | CI build verified; ran under PacketFrame on an EFG on 6.0.17 (Ready, FIB readback verify) |
+
+Pick the row for the firmware the gateway runs (`cat /etc/debian_version`).
+The bullseye build cannot install on UniFi OS 6.x: it depends on
+`libssl1.1`, which Debian 13 does not ship. Pins that serve one gateway
+build the same VPP source (enforced by `.github/workflows/pins.yml`), so
+one consumer build drives either.
 
 Other UniFi gateways are candidates as need arises — add a pin file,
 and the workflow does the rest. The EFG pin's comments carry the full
@@ -75,8 +82,15 @@ remain there for link stability; everything new publishes here.
 
 ## Installing on a gateway
 
+Download the build for the gateway's Debian release (see
+[Supported gateways](#supported-gateways)):
+
 ```sh
+# UniFi OS 6.x (Debian 13):
+gh release download vpp-v26.06-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
+# UniFi OS 5.x (Debian 11):
 gh release download vpp-v26.06-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
+
 sha256sum -c vpp/SHA256SUMS --ignore-missing
 ```
 
@@ -125,7 +139,10 @@ Operational guidance for running VPP under PacketFrame's supervision
 ## Bumping a pin
 
 1. Edit the pin file (e.g. `pins/efg.toml`): change `ref`, optionally
-   set `commit` for a strict pin.
+   set `commit` for a strict pin. Edit every pin for that gateway
+   together (`pins/efg.toml` and `pins/efg-trixie.toml` for the EFG):
+   `pins.yml` fails a PR whose pins for one gateway disagree on `ref`,
+   `commit` or `platform`.
 2. PR to `main`. The merge triggers `.github/workflows/build.yml`,
    which builds on a free native arm64 runner inside a container of
    the target distro (~45 min), verifies, and publishes the new tag.

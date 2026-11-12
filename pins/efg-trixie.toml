@@ -1,0 +1,39 @@
+# VPP pin for the UniFi EFG on UniFi OS 6.0.x (Debian 13, trixie).
+#
+# THIS FILE IS A BUILD TRIGGER, like pins/efg.toml: editing it on main
+# runs .github/workflows/build.yml for this pin alone, which publishes
+# `vpp-<ref>-<platform>-trixie-arm64`.
+#
+# Why a second EFG pin: UniFi OS 6.0.7 moved the Enterprise Firewalls
+# to Debian 13 (release notes: "Upgraded the Debian distribution to
+# Trixie"). The bullseye build cannot install there: its vpp,
+# vpp-crypto-engines, vpp-plugin-core and vpp-plugin-dpdk depend on
+# libssl1.1, which Debian 13 does not ship (checked on an EFG on
+# 6.0.17, 2026-11-11). Bridging with bullseye's libssl1.1 works (same
+# hardware, same 5.15.72-ui-cn9670 kernel, VPP Ready in 36 s) but puts
+# an end-of-life OpenSSL on the router; this pin links VPP against
+# trixie's own libraries instead.
+#
+# Everything about the hardware, the octeon9 platform and why the
+# native octeon driver is the only datapath that works on the CN9670
+# is in pins/efg.toml and applies unchanged. Keep `ref`, `commit` and
+# `platform` in step with that file: PacketFrame's vpp-offload checks
+# VPP's API message CRCs at attach, so both builds must come from the
+# same VPP source for one PacketFrame build to drive either.
+# .github/workflows/pins.yml fails a PR where they differ.
+#
+# The bullseye pin stays: EFGs on UniFi OS 5.x (Debian 11) still need it.
+
+[target]
+gateway = "efg"
+
+# UniFi OS 6.0.x base, verified on an EFG on 6.0.17 (2026-11-11):
+#   Debian 13.7 (trixie), arm64, glibc 2.41, kernel 5.15.72-ui-cn9670.
+distro = "trixie"
+arch = "arm64"
+glibc_floor = "2.41"
+
+[vpp]
+ref = "v26.06"
+commit = ""
+platform = "octeon9"

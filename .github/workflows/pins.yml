@@ -1,0 +1,51 @@
+name: Pin consistency
+
+# Pins that serve one gateway (one per OS generation, e.g. pins/efg.toml
+# for Debian 11 and pins/efg-trixie.toml for Debian 13) must build the
+# same VPP. The consumer, PacketFrame's vpp-offload, checks VPP's API
+# CRCs at attach, so builds from different sources would fail there on
+# one OS generation. build.yml derives each tag from its pin alone and
+# skips a pin whose tag is already published, so a bump that edits one
+# pin and not its siblings would ship divergent builds silently. This
+# check fails that PR instead.
+#
+# Kept out of build.yml on purpose: a change to build.yml rebuilds and
+# REPLACES every published release (see its resolve step), and consumers
+# pin those assets by sha256.
+
+on:
+  pull_request:
+    paths: ['pins/**', '.github/workflows/pins.yml']
+  push:
+    branches: [main]
+    paths: ['pins/**', '.github/workflows/pins.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  same-vpp-per-gateway:
+    name: Pins for one gateway build the same VPP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare ref, commit and platform across each gateway's pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A src=()
+          for pin in pins/*.toml; do
+            # Same grep-based field read as build.yml's resolve step.
+            field() { grep -E "^\s*$1\s*=" "$pin" | head -1 | cut -d'"' -f2 || true; }
+            gw=$(field gateway); [ -n "$gw" ] || gw=unknown
+            platform=$(field platform); [ -n "$platform" ] || platform=generic
+            this="ref=$(field ref) commit=$(field commit) platform=$platform"
+            echo "$pin [$gw]: $this"
+            if [ -z "${src[$gw]:-}" ]; then
+              src[$gw]="$this|$pin"
+            elif [ "${src[$gw]%%|*}" != "$this" ]; then
+              echo "::error file=$pin::$pin builds VPP ($this) but ${src[$gw]#*|} builds (${src[$gw]%%|*}) for the same gateway '$gw'; bump every pin for a gateway together"
+              exit 1
+            fi
+          done
