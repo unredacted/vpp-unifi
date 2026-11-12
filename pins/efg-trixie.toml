@@ -16,10 +16,11 @@
 #
 # Everything about the hardware, the octeon9 platform and why the
 # native octeon driver is the only datapath that works on the CN9670
-# is in pins/efg.toml and applies unchanged. Keep `ref` and `platform`
-# in step with that file: PacketFrame's vpp-offload checks VPP's API
-# message CRCs at attach, so both builds must come from the same VPP
-# source for one PacketFrame build to drive either.
+# is in pins/efg.toml and applies unchanged. Keep `ref`, `commit` and
+# `platform` in step with that file: PacketFrame's vpp-offload checks
+# VPP's API message CRCs at attach, so both builds must come from the
+# same VPP source for one PacketFrame build to drive either.
+# .github/workflows/pins.yml fails a PR where they differ.
 #
 # The bullseye pin stays: EFGs on UniFi OS 5.x (Debian 11) still need it.
 
