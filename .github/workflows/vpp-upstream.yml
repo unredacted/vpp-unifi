@@ -1,0 +1,216 @@
+name: VPP upstream watch
+
+# Dependabot for VPP. Dependabot itself cannot (see .github/dependabot.yml):
+# the pins are this repo's own TOML, and VPP is followed by git branch and
+# commit, not as a package.
+#
+# Weekly, for each stable branch the pins build (`branch` + `commit`):
+#   - when the branch head has moved past the pinned commit, open a PR that
+#     moves every pin on that branch to the new head, list the upstream
+#     commits, flag any changed .api file (PacketFrame's vpp-offload checks
+#     VPP's API CRCs at attach, so an API change needs a PacketFrame build
+#     generated against it), and start a build-and-verify run of the PR
+#     branch (publish off);
+#   - when FD.io has tagged a newer release line than a pin's `ref`, open an
+#     issue rather than a PR: a new line changes VPP's API, and moving to it
+#     starts with PacketFrame.
+#
+# A PR opened with GITHUB_TOKEN gets no `pull_request` runs (or only ones
+# awaiting approval), and checks from `workflow_dispatch` runs are not shown
+# on a PR. So this dispatches build.yml (build-and-verify, publish off) and
+# pins.yml on the PR branch, waits for them, and posts each result as a
+# commit status on the PR's head commit, which the PR does show.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  statuses: write
+
+concurrency:
+  group: vpp-upstream
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Watch FDio/vpp
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: https://github.com/FDio/vpp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Propose stable-branch bumps
+        shell: bash
+        run: |
+          set -euo pipefail
+          field() { grep -E "^\s*$1\s*=" "$2" | head -1 | cut -d'"' -f2 || true; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          declare -A done_key=()
+          for pin in pins/*.toml; do
+            branch=$(field branch "$pin"); commit=$(field commit "$pin"); ref=$(field ref "$pin")
+            [ -n "$branch" ] || continue
+            key="$branch $commit"
+            [ -z "${done_key[$key]:-}" ] || continue
+            done_key[$key]=1
+
+            head=$(git ls-remote "$UPSTREAM" "refs/heads/$branch" | cut -f1)
+            if [ -z "$head" ]; then
+              echo "::warning::$pin: upstream has no branch $branch"; continue
+            fi
+            if [ "$head" = "$commit" ]; then
+              echo "$branch: pinned commit ${commit:0:9} is the branch head"; continue
+            fi
+
+            # The starting commit is part of the name: pins on one branch at
+            # different commits (different gateways) each get their own PR.
+            topic="vpp-upstream/${branch//\//-}-${commit:0:9}-to-${head:0:9}"
+            if [ "$(gh pr list --head "$topic" --state all --json number --jq length)" != 0 ]; then
+              echo "$branch: a PR for ${head:0:9} already exists ($topic)"; continue
+            fi
+
+            # Paginated: unpaged, compare lists at most 250 commits.
+            cmp=$(gh api --paginate "repos/FDio/vpp/compare/${commit}...${head}?per_page=100" | jq -s '
+              { ahead_by: .[0].ahead_by, behind_by: .[0].behind_by,
+                commits: [.[].commits[]], files: [.[].files[]?] | unique_by(.filename) }')
+            behind=$(jq -r .behind_by <<<"$cmp")
+            if [ "$behind" != 0 ]; then
+              echo "::warning::$branch head ${head:0:9} does not descend from the pinned ${commit:0:9} (behind_by=$behind); not proposing a bump"
+              continue
+            fi
+            ahead=$(jq -r .ahead_by <<<"$cmp")
+            commits=$(jq -r '.commits[] | "- [`\(.sha[0:9])`](https://github.com/FDio/vpp/commit/\(.sha)) \(.commit.message | split("\n")[0])"' <<<"$cmp")
+            api=$(jq -r '[.files[].filename | select(endswith(".api"))] | join(", ")' <<<"$cmp")
+            nfiles=$(jq -r '.files | length' <<<"$cmp")
+            ncommits=$(jq -r '.commits | length' <<<"$cmp")
+            [ "$ncommits" = "$ahead" ] || echo "::warning::compare listed $ncommits of $ahead commits"
+
+            git switch -q -c "$topic" origin/main
+            changed=()
+            for p in pins/*.toml; do
+              if [ "$(field branch "$p")" = "$branch" ] && [ "$(field commit "$p")" = "$commit" ]; then
+                # Same leading whitespace the field() parser accepts.
+                sed -i -E "s/^([[:space:]]*commit[[:space:]]*=[[:space:]]*\")${commit}(\")/\1${head}\2/" "$p"
+                if [ "$(field commit "$p")" != "$head" ]; then
+                  echo "::error::$p: could not move commit to $head"; exit 1
+                fi
+                changed+=("$p")
+              fi
+            done
+            git add "${changed[@]}"
+            git commit -q -m "pins: move ${branch} from ${commit:0:9} to ${head:0:9} (${ref} + upstream fixes)" \
+              -m "Proposed by .github/workflows/vpp-upstream.yml: ${ahead} upstream commit(s) on ${branch}."
+            git push -q origin "$topic"
+
+            if [ -n "$api" ]; then
+              api_note="**API files changed:** ${api}. PacketFrame's vpp-offload checks VPP's API CRCs at attach, so this needs a PacketFrame build generated against the new definitions before any gateway installs it. Compare the \`vpp-api-json.tar.gz\` from the build below with the current release's."
+            else
+              api_note="**No .api file changed**, so the API CRCs PacketFrame checks at attach are unchanged."
+            fi
+            truncated=""
+            [ "$nfiles" -lt 300 ] || truncated=" (GitHub's compare lists at most 300 files: check the API files by hand)"
+            body_file=$(mktemp)
+            {
+              echo "Moves every pin on \`${branch}\` (${changed[*]}) from \`${commit:0:9}\` to the branch head \`${head:0:9}\`: ${ahead} upstream commit(s) since the pinned one."
+              echo
+              echo "${api_note}${truncated}"
+              echo
+              echo "### Upstream commits"
+              echo
+              echo "${commits}"
+              echo
+              echo "### Before merging"
+              echo
+              echo "- The build-and-verify run this workflow started on the branch (publish off) passed, and \`Pin consistency\` passed."
+              echo "- Comments in the pins that describe the previous commit are updated."
+              echo "- Merging publishes \`vpp-${ref}-${head:0:9}-<platform>-<distro>-<arch>\` for each pin; consumers pin the new release's hashes on their own schedule."
+              echo
+              echo "Opened by [VPP upstream watch](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+            } > "$body_file"
+            gh pr create --base main --head "$topic" \
+              --title "pins: move ${branch} to ${head:0:9} (${ahead} upstream fixes)" \
+              --body-file "$body_file"
+            gh workflow run build.yml --ref "$topic" -f publish=false -f force=false -f pin=
+            gh workflow run pins.yml --ref "$topic"
+            echo "$topic $(git rev-parse HEAD)" >> "$RUNNER_TEMP/proposed"
+            git switch -q --detach origin/main
+          done
+
+      - name: Report the checks on each proposed PR
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s "$RUNNER_TEMP/proposed" ] || { echo "no PR proposed"; exit 0; }
+          status() {  # sha context state url description
+            gh api "repos/${GITHUB_REPOSITORY}/statuses/$1" -f context="$2" -f state="$3" \
+              -f target_url="$4" -f description="$5" >/dev/null
+          }
+          find_run() {  # workflow topic -> id of its dispatched run (waits up to ~3 min)
+            for _ in $(seq 1 36); do
+              id=$(gh run list --workflow "$1" --branch "$2" --event workflow_dispatch \
+                     --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+              [ -n "$id" ] && { echo "$id"; return; }
+              sleep 5
+            done
+          }
+          while read -r topic sha; do
+            for wf in pins.yml build.yml; do
+              ctx="vpp-upstream / ${wf%.yml}"
+              id=$(find_run "$wf" "$topic")
+              if [ -z "$id" ]; then
+                status "$sha" "$ctx" error "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" "dispatched run not found"
+                continue
+              fi
+              url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${id}"
+              status "$sha" "$ctx" pending "$url" "running"
+              if gh run watch "$id" --exit-status --interval 60 >/dev/null; then
+                status "$sha" "$ctx" success "$url" "passed"
+              else
+                status "$sha" "$ctx" failure "$url" "failed"
+              fi
+            done
+          done < "$RUNNER_TEMP/proposed"
+
+      - name: Report newer VPP release lines
+        shell: bash
+        run: |
+          set -euo pipefail
+          field() { grep -E "^\s*$1\s*=" "$2" | head -1 | cut -d'"' -f2 || true; }
+          # Release LINES only (vYY.MM): a point tag like v26.06.1 is the same
+          # line as v26.06, whose maintenance the stable-branch step covers.
+          latest=$(git ls-remote --tags "$UPSTREAM" 'refs/tags/v*' \
+            | sed -E 's#.*refs/tags/##; /\^\{\}$/d' \
+            | grep -E '^v[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          [ -n "$latest" ] || { echo "::warning::no release tags read from $UPSTREAM"; exit 0; }
+          refs=$(for p in pins/*.toml; do field ref "$p" | grep -oE '^v[0-9]+\.[0-9]+'; done | sort -u)
+          for ref in $refs; do
+            newest=$(printf '%s\n%s\n' "$ref" "$latest" | sort -V | tail -1)
+            if [ "$newest" = "$ref" ]; then
+              echo "$ref is the newest VPP release line"; continue
+            fi
+            title="VPP ${latest} is released (pins build ${ref})"
+            if [ "$(gh issue list --state all --search "in:title \"${title}\"" --json title --jq "[.[] | select(.title == \"${title}\")] | length")" != 0 ]; then
+              echo "issue already exists: $title"; continue
+            fi
+            body_file=$(mktemp)
+            {
+              echo "FD.io has tagged [\`${latest}\`](${UPSTREAM}/releases/tag/${latest}); the pins build \`${ref}\`."
+              echo
+              echo "A new release line changes VPP's binary API, and PacketFrame's vpp-offload checks the API CRCs at attach. Moving starts in PacketFrame: generate its VPP bindings against the new line's \`.api\` definitions, test them on hardware, then bump every pin for a gateway together here (\`ref\`, and \`branch\` to the new \`stable/YYMM\` with its \`commit\`, or drop them to build the tag alone)."
+              echo
+              echo "Opened by [VPP upstream watch](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+            } > "$body_file"
+            gh issue create --title "$title" --body-file "$body_file"
+          done

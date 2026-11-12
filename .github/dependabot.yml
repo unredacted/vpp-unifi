@@ -1,0 +1,16 @@
+version: 2
+
+# Dependabot covers what it can parse here: the GitHub Actions the workflows
+# use. It cannot read the VPP pins (pins/*.toml are this repo's own format,
+# and VPP is tracked by an upstream git branch and commit, not a package),
+# so .github/workflows/vpp-upstream.yml watches FDio/vpp instead and opens
+# the same kind of PR when a pinned stable branch moves.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
