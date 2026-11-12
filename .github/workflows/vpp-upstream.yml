@@ -15,9 +15,11 @@ name: VPP upstream watch
 #     issue rather than a PR: a new line changes VPP's API, and moving to it
 #     starts with PacketFrame.
 #
-# A PR opened with GITHUB_TOKEN does not trigger `pull_request` workflows,
-# so this dispatches build.yml and pins.yml on the PR branch itself; their
-# runs report on the PR's head commit.
+# A PR opened with GITHUB_TOKEN gets no `pull_request` runs (or only ones
+# awaiting approval), and checks from `workflow_dispatch` runs are not shown
+# on a PR. So this dispatches build.yml (build-and-verify, publish off) and
+# pins.yml on the PR branch, waits for them, and posts each result as a
+# commit status on the PR's head commit, which the PR does show.
 
 on:
   schedule:
@@ -29,6 +31,7 @@ permissions:
   pull-requests: write
   issues: write
   actions: write
+  statuses: write
 
 concurrency:
   group: vpp-upstream
@@ -70,12 +73,17 @@ jobs:
               echo "$branch: pinned commit ${commit:0:9} is the branch head"; continue
             fi
 
-            topic="vpp-upstream/${branch//\//-}-${head:0:9}"
+            # The starting commit is part of the name: pins on one branch at
+            # different commits (different gateways) each get their own PR.
+            topic="vpp-upstream/${branch//\//-}-${commit:0:9}-to-${head:0:9}"
             if [ "$(gh pr list --head "$topic" --state all --json number --jq length)" != 0 ]; then
               echo "$branch: a PR for ${head:0:9} already exists ($topic)"; continue
             fi
 
-            cmp=$(gh api "repos/FDio/vpp/compare/${commit}...${head}")
+            # Paginated: unpaged, compare lists at most 250 commits.
+            cmp=$(gh api --paginate "repos/FDio/vpp/compare/${commit}...${head}?per_page=100" | jq -s '
+              { ahead_by: .[0].ahead_by, behind_by: .[0].behind_by,
+                commits: [.[].commits[]], files: [.[].files[]?] | unique_by(.filename) }')
             behind=$(jq -r .behind_by <<<"$cmp")
             if [ "$behind" != 0 ]; then
               echo "::warning::$branch head ${head:0:9} does not descend from the pinned ${commit:0:9} (behind_by=$behind); not proposing a bump"
@@ -85,12 +93,18 @@ jobs:
             commits=$(jq -r '.commits[] | "- [`\(.sha[0:9])`](https://github.com/FDio/vpp/commit/\(.sha)) \(.commit.message | split("\n")[0])"' <<<"$cmp")
             api=$(jq -r '[.files[].filename | select(endswith(".api"))] | join(", ")' <<<"$cmp")
             nfiles=$(jq -r '.files | length' <<<"$cmp")
+            ncommits=$(jq -r '.commits | length' <<<"$cmp")
+            [ "$ncommits" = "$ahead" ] || echo "::warning::compare listed $ncommits of $ahead commits"
 
             git switch -q -c "$topic" origin/main
             changed=()
             for p in pins/*.toml; do
               if [ "$(field branch "$p")" = "$branch" ] && [ "$(field commit "$p")" = "$commit" ]; then
-                sed -i -E "s/^(commit[[:space:]]*=[[:space:]]*\")${commit}(\")/\1${head}\2/" "$p"
+                # Same leading whitespace the field() parser accepts.
+                sed -i -E "s/^([[:space:]]*commit[[:space:]]*=[[:space:]]*\")${commit}(\")/\1${head}\2/" "$p"
+                if [ "$(field commit "$p")" != "$head" ]; then
+                  echo "::error::$p: could not move commit to $head"; exit 1
+                fi
                 changed+=("$p")
               fi
             done
@@ -129,19 +143,58 @@ jobs:
               --body-file "$body_file"
             gh workflow run build.yml --ref "$topic" -f publish=false -f force=false -f pin=
             gh workflow run pins.yml --ref "$topic"
+            echo "$topic $(git rev-parse HEAD)" >> "$RUNNER_TEMP/proposed"
             git switch -q --detach origin/main
           done
+
+      - name: Report the checks on each proposed PR
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s "$RUNNER_TEMP/proposed" ] || { echo "no PR proposed"; exit 0; }
+          status() {  # sha context state url description
+            gh api "repos/${GITHUB_REPOSITORY}/statuses/$1" -f context="$2" -f state="$3" \
+              -f target_url="$4" -f description="$5" >/dev/null
+          }
+          find_run() {  # workflow topic -> id of its dispatched run (waits up to ~3 min)
+            for _ in $(seq 1 36); do
+              id=$(gh run list --workflow "$1" --branch "$2" --event workflow_dispatch \
+                     --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+              [ -n "$id" ] && { echo "$id"; return; }
+              sleep 5
+            done
+          }
+          while read -r topic sha; do
+            for wf in pins.yml build.yml; do
+              ctx="vpp-upstream / ${wf%.yml}"
+              id=$(find_run "$wf" "$topic")
+              if [ -z "$id" ]; then
+                status "$sha" "$ctx" error "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" "dispatched run not found"
+                continue
+              fi
+              url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${id}"
+              status "$sha" "$ctx" pending "$url" "running"
+              if gh run watch "$id" --exit-status --interval 60 >/dev/null; then
+                status "$sha" "$ctx" success "$url" "passed"
+              else
+                status "$sha" "$ctx" failure "$url" "failed"
+              fi
+            done
+          done < "$RUNNER_TEMP/proposed"
 
       - name: Report newer VPP release lines
         shell: bash
         run: |
           set -euo pipefail
           field() { grep -E "^\s*$1\s*=" "$2" | head -1 | cut -d'"' -f2 || true; }
+          # Release LINES only (vYY.MM): a point tag like v26.06.1 is the same
+          # line as v26.06, whose maintenance the stable-branch step covers.
           latest=$(git ls-remote --tags "$UPSTREAM" 'refs/tags/v*' \
             | sed -E 's#.*refs/tags/##; /\^\{\}$/d' \
-            | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)
+            | grep -E '^v[0-9]+\.[0-9]+$' | sort -V | tail -1)
           [ -n "$latest" ] || { echo "::warning::no release tags read from $UPSTREAM"; exit 0; }
-          refs=$(for p in pins/*.toml; do field ref "$p"; done | sort -u)
+          refs=$(for p in pins/*.toml; do field ref "$p" | grep -oE '^v[0-9]+\.[0-9]+'; done | sort -u)
           for ref in $refs; do
             newest=$(printf '%s\n%s\n' "$ref" "$latest" | sort -V | tail -1)
             if [ "$newest" = "$ref" ]; then
