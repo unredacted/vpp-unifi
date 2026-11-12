@@ -27,8 +27,8 @@ the exact upstream commit.
 
 | Gateway | SoC | Platform | Pin | Status |
 |---|---|---|---|---|
-| EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) → `vpp-v26.06-octeon9-bullseye-arm64` | validated end to end on a reference EFG (full-table FIB sync + readback verify) |
-| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.06-octeon9-trixie-arm64` | CI build verified; ran under PacketFrame on an EFG on 6.0.17 (Ready, FIB readback verify) |
+| EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) → `vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` | validated end to end on a reference EFG (full-table FIB sync + readback verify) |
+| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.06-8a556fbe1-octeon9-trixie-arm64` | CI build verified; ran under PacketFrame on an EFG on 6.0.17 (Ready, FIB readback verify) |
 
 Pick the row for the firmware the gateway runs (`cat /etc/debian_version`).
 The bullseye build cannot install on UniFi OS 6.x: it depends on
@@ -50,9 +50,14 @@ Each build publishes under a tag of the form:
 
 ```
 vpp-<vpp ref>-<platform>-<distro>-<arch>
+vpp-<vpp ref>-<commit:9>-<platform>-<distro>-<arch>   # a commit on the release's stable branch
 ```
 
-e.g. `vpp-v26.06-octeon9-bullseye-arm64`. Tags are deliberately
+e.g. `vpp-v26.06-octeon9-bullseye-arm64` (the v26.06 tag) and
+`vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` (v26.06 plus the fixes on
+`stable/2606` up to 8a556fbe1). FD.io has tagged no point release since
+v22.10.1; a release's fixes land on its `stable/YYMM` branch, so a pin
+names that branch and the exact commit on it (see `pins/efg.toml`). Tags are deliberately
 gateway-agnostic: two gateways sharing a platform share one artifact.
 
 Release assets:
@@ -87,9 +92,9 @@ Download the build for the gateway's Debian release (see
 
 ```sh
 # UniFi OS 6.x (Debian 13):
-gh release download vpp-v26.06-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
+gh release download vpp-v26.06-8a556fbe1-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
 # UniFi OS 5.x (Debian 11):
-gh release download vpp-v26.06-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
+gh release download vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
 
 sha256sum -c vpp/SHA256SUMS --ignore-missing
 ```
@@ -138,8 +143,11 @@ Operational guidance for running VPP under PacketFrame's supervision
 
 ## Bumping a pin
 
-1. Edit the pin file (e.g. `pins/efg.toml`): change `ref`, optionally
-   set `commit` for a strict pin. Edit every pin for that gateway
+1. Edit the pin file (e.g. `pins/efg.toml`). For a release's latest
+   fixes, keep `ref` on the release tag and move `commit` to the new
+   head of its `branch` (`stable/YYMM`), in full. For a new release,
+   change `ref` (and `branch`/`commit`, or drop them to build the tag
+   alone). Edit every pin for that gateway
    together (`pins/efg.toml` and `pins/efg-trixie.toml` for the EFG):
    `pins.yml` fails a PR whose pins for one gateway disagree on `ref`,
    `commit` or `platform`.

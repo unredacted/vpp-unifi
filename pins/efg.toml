@@ -124,11 +124,29 @@ glibc_floor = "2.31"
 #     unredacted/packetframe, where these builds originally lived.
 ref = "v26.06"
 
-# Optional strict pin. When non-empty the workflow verifies the ref
-# resolves to exactly this commit and fails otherwise, so a retagged
-# upstream can't silently change what we ship. Recorded in the
-# published manifest either way.
-commit = ""
+# The release's maintenance fixes. FD.io has tagged no point release
+# (vYY.MM.N) since v22.10.1: fixes for a release land on its
+# `stable/YYMM` branch, and FD.io's own packages are built from that
+# branch (versioned like 26.06.0-16~g8a556fbe1). So `branch` names that
+# stable branch and `commit` the exact commit on it to build, in full.
+# The workflow checks the commit is on `branch` and descends from `ref`,
+# and names the release after both (vpp-v26.06-8a556fbe1-...). The
+# branch moves; the commit is what makes the build reproducible, and
+# moving to newer fixes is a deliberate bump of `commit`.
+#
+# Without `branch`, `ref` alone is built, and a non-empty `commit` is a
+# strict pin: the workflow fails if the tag resolves elsewhere (upstream
+# retag).
+#
+# 8a556fbe1 = v26.06 + 16 (stable/2606 head, 2026-10-29), no .api file
+# changed since v26.06. Among the fixes: an ip6-nd crash on an NS for a
+# link-local target when the interface has no link-local FIB (ca2a31d21);
+# NS source learning only after the target validates (e817a5b1e); VPP
+# time kept monotonic across wall-clock steps (8f426ed54); an os_panic on
+# ICMP errors with an untranslatable inner protocol (92e225303); TCP
+# header length checks in mss_clamp (f0bd32db7).
+branch = "stable/2606"
+commit = "8a556fbe14b58c72b7bfb86e650783b0a6fc00cc"
 
 # Build variant. Changing this produces a separately-tagged artifact;
 # variants coexist on the release page.
