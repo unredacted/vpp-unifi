@@ -40,7 +40,7 @@ jobs:
             field() { grep -E "^\s*$1\s*=" "$pin" | head -1 | cut -d'"' -f2 || true; }
             gw=$(field gateway); [ -n "$gw" ] || gw=unknown
             platform=$(field platform); [ -n "$platform" ] || platform=generic
-            this="ref=$(field ref) commit=$(field commit) platform=$platform"
+            this="ref=$(field ref) branch=$(field branch) commit=$(field commit) platform=$platform"
             echo "$pin [$gw]: $this"
             if [ -z "${src[$gw]:-}" ]; then
               src[$gw]="$this|$pin"

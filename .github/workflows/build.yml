@@ -1,7 +1,10 @@
 name: VPP build
 
 # Builds UNMODIFIED upstream VPP for UniFi gateways and publishes each
-# build under its own release tag, `vpp-<ref>-<platform>-<distro>-<arch>`.
+# build under its own release tag, `vpp-<ref>-<platform>-<distro>-<arch>`,
+# or `vpp-<ref>-<commit:9>-<platform>-<distro>-<arch>` for a pin that builds
+# a commit on a release's stable branch (`branch` + `commit`; see
+# pins/efg.toml).
 #
 # Why this repo exists: no VPP package exists for Debian 11 arm64
 # anywhere (fd.io ships noble/jammy arm64 + bookworm amd64; Debian has
@@ -112,6 +115,7 @@ jobs:
             get() { grep -E "^\s*$1\s*=" "$pin" | head -1 | cut -d'"' -f2 || true; }
             ref=$(get ref)
             commit=$(get commit)
+            branch=$(get branch)
             platform=$(get platform)
             gateway=$(get gateway)
             distro=$(get distro)
@@ -129,7 +133,16 @@ jobs:
             # deep.
             [ "$arch" = "arm64" ] || { echo "::error::$pin: arch '$arch' unsupported (only arm64 wired up)"; exit 1; }
 
-            tag="vpp-${ref}-${platform}-${distro}-${arch}"
+            # A stable-branch build names its exact commit, in full: the
+            # branch moves, so the commit is what makes the build (and
+            # its tag) reproducible.
+            if [ -n "$branch" ]; then
+              echo "$commit" | grep -Eq '^[0-9a-f]{40}$' \
+                || { echo "::error::$pin sets branch '$branch' but commit '$commit' is not a full 40-hex sha"; exit 1; }
+              tag="vpp-${ref}-${commit:0:9}-${platform}-${distro}-${arch}"
+            else
+              tag="vpp-${ref}-${platform}-${distro}-${arch}"
+            fi
             echo "$pin -> $tag (gateway: $gateway)"
 
             needs_build=false
@@ -149,11 +162,11 @@ jobs:
             if [ "$needs_build" = "true" ]; then
               any_build=true
               entries=$(jq -c \
-                --arg pin "$pin" --arg ref "$ref" --arg commit "$commit" \
+                --arg pin "$pin" --arg ref "$ref" --arg commit "$commit" --arg branch "$branch" \
                 --arg platform "$platform" --arg gateway "$gateway" \
                 --arg distro "$distro" --arg arch "$arch" \
                 --arg glibc_floor "$glibc_floor" --arg tag "$tag" \
-                '. + [{pin:$pin, ref:$ref, commit:$commit, platform:$platform,
+                '. + [{pin:$pin, ref:$ref, commit:$commit, branch:$branch, platform:$platform,
                        gateway:$gateway, distro:$distro, arch:$arch,
                        glibc_floor:$glibc_floor, tag:$tag}]' <<<"$entries")
             fi
@@ -164,7 +177,7 @@ jobs:
           jq . <<<"$entries"
 
   build:
-    name: Build VPP ${{ matrix.ref }} (${{ matrix.platform }}, ${{ matrix.distro }}/${{ matrix.arch }})
+    name: Build VPP ${{ matrix.ref }}${{ matrix.branch != '' && format(' + {0}', matrix.branch) || '' }} (${{ matrix.platform }}, ${{ matrix.distro }}/${{ matrix.arch }})
     needs: resolve
     if: needs.resolve.outputs.any_build == 'true'
     strategy:
@@ -240,9 +253,30 @@ jobs:
       - name: Clone upstream VPP at the pinned ref
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch '${{ matrix.ref }}' \
-            https://github.com/FDio/vpp /vpp
-          cd /vpp
+          branch='${{ matrix.branch }}'
+          if [ -n "$branch" ]; then
+            # A commit on a release's stable branch (FD.io has tagged no
+            # point release since v22.10.1; fixes land on stable/YYMM).
+            # Blobless, so the history is there for the checks below and
+            # for VPP's own `git describe` versioning, without every
+            # past blob. The commit must be on that branch and after the
+            # pin's release tag.
+            ref='${{ matrix.ref }}'; commit='${{ matrix.commit }}'
+            git clone --filter=blob:none --no-checkout --branch "$branch" \
+              https://github.com/FDio/vpp /vpp
+            cd /vpp
+            git fetch -q origin "refs/tags/${ref}:refs/tags/${ref}"
+            git merge-base --is-ancestor "$commit" "origin/$branch" \
+              || { echo "::error::${{ matrix.pin }}: $commit is not on $branch"; exit 1; }
+            git merge-base --is-ancestor "refs/tags/${ref}^{commit}" "$commit" \
+              || { echo "::error::${{ matrix.pin }}: $commit does not descend from $ref"; exit 1; }
+            git checkout -q --detach "$commit"
+            echo "$commit is $(git describe --long --match 'v*') on $branch"
+          else
+            git clone --depth 1 --branch '${{ matrix.ref }}' \
+              https://github.com/FDio/vpp /vpp
+            cd /vpp
+          fi
           resolved=$(git rev-parse HEAD)
           echo "VPP_COMMIT=$resolved" >> "$GITHUB_ENV"
           expected='${{ matrix.commit }}'
@@ -722,6 +756,7 @@ jobs:
           cd /out
           jq -n \
             --arg ref '${{ matrix.ref }}' \
+            --arg branch '${{ matrix.branch }}' \
             --arg commit "$VPP_COMMIT" \
             --arg platform '${{ matrix.platform }}' \
             --arg gateway '${{ matrix.gateway }}' \
@@ -730,7 +765,7 @@ jobs:
             --arg pmd "${PMD_FAMILY:-unknown}" \
             --arg built_by '${{ github.repository }}@${{ github.sha }}' \
             --arg run '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
-            '{vpp_ref:$ref, vpp_commit:$commit, platform:$platform, gateway:$gateway,
+            '{vpp_ref:$ref, vpp_branch:$branch, vpp_commit:$commit, platform:$platform, gateway:$gateway,
               distro:$distro, arch:$arch, octeon_pmd:$pmd,
               patches:"none (upstream verbatim)",
               packaging:"etc/sysctl.d/80-vpp.conf removed from the vpp .deb — applied at every boot, its vm.nr_hugepages=1024 is a 512 GiB hugepage request on 64K-page kernels (bricked a 64 GB EFG 2026-08-21); hugepage sizing belongs to the consumer at attach",
@@ -940,7 +975,7 @@ jobs:
           pmd=$(jq -r '.octeon_pmd' manifest.json)
           tag='${{ matrix.tag }}'
           notes=$(printf '%s\n' \
-            "Unmodified upstream VPP \`${{ matrix.ref }}\` (\`$commit\`), built for Debian ${{ matrix.distro }} ${{ matrix.arch }} — the combination UniFi OS on the \`${{ matrix.gateway }}\` can install." \
+            "Unmodified upstream VPP \`${{ matrix.ref }}\`${{ matrix.branch != '' && format(' plus its fixes on \`{0}\`', matrix.branch) || '' }} (\`$commit\`), built for Debian ${{ matrix.distro }} ${{ matrix.arch }} — the combination UniFi OS on the \`${{ matrix.gateway }}\` can install." \
             "" \
             "Variant: \`${{ matrix.platform }}\` · Octeon PMD: \`$pmd\` · No patches applied." \
             "" \
@@ -951,7 +986,8 @@ jobs:
             "\`vpp-api-json.tar.gz\` is the API-definition bundle for binary-API codegen (consumed by unredacted/packetframe's vpp-offload module); it is published separately so codegen does not download the .debs." \
             "" \
             "Install order and operational guidance: this repo's README.")
-          title="VPP ${{ matrix.ref }} (${{ matrix.platform }}, ${{ matrix.distro }}/${{ matrix.arch }})"
+          branch='${{ matrix.branch }}'
+          title="VPP ${{ matrix.ref }}${branch:+ + ${branch}@${commit:0:9}} (${{ matrix.platform }}, ${{ matrix.distro }}/${{ matrix.arch }})"
           # Flat asset names, matching SHA256SUMS — see the manifest
           # step's note on why that matters after a download.
           #
