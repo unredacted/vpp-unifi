@@ -22,6 +22,16 @@ name: VPP build
 # Native arm64 runners (free for public repos) with a distro container
 # matching the pin: no QEMU, no cross-compile, correct glibc by
 # construction.
+#
+# Nothing publishes that PacketFrame does not work with. Before the
+# publish job, and gating it, the packetframe-* jobs run PacketFrame's own
+# checks on the debs just built: its VPP sampler plugin builds and passes
+# its live-VPP smoke test, and its binary-API bindings regenerate
+# unchanged from this VPP's .api bundle. The checks live in packetframe
+# (.github/actions/sampler-plugin, .github/scripts/vpp-api-drift.sh), at
+# `main` unless a dispatch names another ref: the way through for a VPP
+# that needs a PacketFrame change first (packetframe's
+# crates/modules/vpp-offload/vpp-api/README.md, "The gate").
 
 on:
   push:
@@ -49,6 +59,10 @@ on:
         description: 'Build only this pin file (e.g. pins/efg-bullseye.toml; empty = all)'
         type: string
         default: ''
+      packetframe-ref:
+        description: 'unredacted/packetframe ref whose checks gate publishing (a branch that adapts PacketFrame to this VPP)'
+        type: string
+        default: 'main'
 
 permissions:
   contents: write
@@ -942,6 +956,85 @@ jobs:
           fi
           echo "installed package verified: loads, resolves, and carries an Octeon driver"
 
+  # PacketFrame's VPP sampler plugin, built against this VPP and run in it:
+  # samples end to end through both feature arcs, a reconfigure, a VPP
+  # restart, and a plugin for another VPP refused while VPP still starts.
+  # PacketFrame's own action, so the test is the one its CI and releases
+  # run; privileged for its tmpfs and for VPP itself.
+  packetframe-plugin:
+    name: PacketFrame's sampler plugin in this VPP (${{ matrix.distro }})
+    needs: [resolve, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:${{ matrix.distro }}
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: unredacted/packetframe
+          ref: ${{ inputs.packetframe-ref || 'main' }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.tag }}
+          path: /pkg
+
+      - uses: ./.github/actions/sampler-plugin
+        with:
+          vpp-debs: /pkg
+
+      # A packetframe ref whose action predates `vpp-debs` would only warn
+      # about the input and test the VPP its SOURCE.json names instead: a
+      # pass that says nothing about this one. So check what ran.
+      - name: The plugin was tested against this VPP
+        run: |
+          set -euo pipefail
+          want=$(dpkg-deb -f "$(find /pkg -name 'vpp_*.deb' -print -quit)" Version)
+          have=$(dpkg-query -W -f='${Version}' vpp)
+          echo "candidate vpp $want; tested against vpp $have"
+          [ "$want" = "$have" ] || { echo "::error::the plugin was tested against vpp $have, not this build's $want (does packetframe@${{ inputs.packetframe-ref || 'main' }} have the vpp-debs input?)"; exit 1; }
+
+  # PacketFrame's vpp-offload speaks VPP's binary API through bindings
+  # generated from vendored .api.json files, and refuses at attach any VPP
+  # whose CRCs differ. Regenerating them from this VPP's bundle must give
+  # the committed generated.rs byte for byte; any difference is wire drift
+  # on a message it speaks.
+  packetframe-api:
+    name: PacketFrame's binary API against this VPP (${{ matrix.distro }})
+    needs: [resolve, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: unredacted/packetframe
+          ref: ${{ inputs.packetframe-ref || 'main' }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.tag }}
+          path: ${{ runner.temp }}/pkg
+
+      - name: Rust (the toolchain packetframe's rust-toolchain.toml pins)
+        run: rustup toolchain install
+
+      - name: Bindings regenerate unchanged from this VPP
+        run: |
+          set -euo pipefail
+          bundle=$(find '${{ runner.temp }}/pkg' -name vpp-api-json.tar.gz -print -quit)
+          [ -n "$bundle" ] || { echo "::error::no vpp-api-json.tar.gz in the artifact"; exit 1; }
+          bash .github/scripts/vpp-api-drift.sh "$bundle"
+
   # Publishing is a SEPARATE job gated on verify-package, not a final
   # step of `build`. It used to be the latter, which meant the .debs
   # were downloadable before anything had tried installing them: a
@@ -950,7 +1043,9 @@ jobs:
   # verified. Ordering, not wording, is what makes that true.
   publish:
     name: Publish release
-    needs: [resolve, build, verify-package]
+    # PacketFrame's checks are gates, not reports: a VPP it does not work
+    # with is never a release, so it can never be vendored or installed.
+    needs: [resolve, build, verify-package, packetframe-plugin, packetframe-api]
     # A push-triggered run leaves `inputs.publish` empty, which coerces
     # equal to `false` — so the PRIMARY automatic trigger would spend
     # the whole build and publish nothing, leaving consumers' release
@@ -990,7 +1085,7 @@ jobs:
             "" \
             "**One packaging deviation** (the only one): \`etc/sysctl.d/80-vpp.conf\` is removed from the \`vpp\` .deb. Applied at every boot, its \`vm.nr_hugepages=1024\` (written for 2 MB pages) is a 512 GiB hugepage request on 64K-page UniFi kernels — it bricked a 64 GB EFG on 2026-08-21. Hugepage sizing belongs to the consumer at attach; see the README's install section." \
             "" \
-            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}." \
+            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}. Against unredacted/packetframe@${{ inputs.packetframe-ref || 'main' }}: its VPP sampler plugin builds and passes its live-VPP smoke test in this VPP, and its binary-API bindings regenerate unchanged from this VPP's API bundle." \
             "" \
             "\`vpp-api-json.tar.gz\` is the API-definition bundle for binary-API codegen (consumed by unredacted/packetframe's vpp-offload module); it is published separately so codegen does not download the .debs." \
             "" \
