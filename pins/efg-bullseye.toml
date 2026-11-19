@@ -1,6 +1,9 @@
-# VPP pin for the UniFi EFG (Enterprise Fortress Gateway).
+# VPP pin for the UniFi EFG (Enterprise Fortress Gateway) on UniFi OS
+# 5.x and earlier (Debian 11, bullseye). Named for its distro like
+# pins/efg-trixie.toml; this file also holds the hardware record both
+# EFG pins share.
 #
-# THIS FILE IS THE BUILD TRIGGER. Editing it runs
+# THIS FILE IS A BUILD TRIGGER. Editing it runs
 # `.github/workflows/build.yml`, which builds *unmodified upstream*
 # VPP inside a container matching [target] below and publishes the
 # .debs + API definitions under their own release tag,

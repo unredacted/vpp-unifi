@@ -1,6 +1,6 @@
 name: Pin consistency
 
-# Pins that serve one gateway (one per OS generation, e.g. pins/efg.toml
+# Pins that serve one gateway (one per OS generation, e.g. pins/efg-bullseye.toml
 # for Debian 11 and pins/efg-trixie.toml for Debian 13) must build the
 # same VPP. The consumer, PacketFrame's vpp-offload, checks VPP's API
 # CRCs at attach, so builds from different sources would fail there on
