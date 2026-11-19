@@ -28,7 +28,7 @@ the exact upstream commit.
 | Gateway | SoC | Platform | Pin | Status |
 |---|---|---|---|---|
 | EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-bullseye.toml`](pins/efg-bullseye.toml) → `vpp-v26.10-b4caea981-octeon9-bullseye-arm64` | CI build verified; not yet run on an EFG. Last hardware-validated: `vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` (full-table FIB sync + readback verify on a reference EFG) |
-| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.10-b4caea981-octeon9-trixie-arm64` | ran under PacketFrame on a lab EFG on 6.0.17 (2026-11-19: install over v26.06, attach with PacketFrame 0.6.3's v26.06 bindings, FIB readback verify over 179,700 routes, keep-VPP adoption, full teardown and cold start). No packets forwarded through VPP yet: the lab's member ports had no carrier |
+| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.10-b4caea981-octeon9-trixie-arm64` | ran under PacketFrame on a lab EFG on 6.0.17 (2026-11-19: install over v26.06, attach with PacketFrame 0.6.3's v26.06 bindings, FIB readback verify over 179,700 routes, keep-VPP adoption, full teardown and cold start). No packets forwarded through VPP yet: the lab's member ports had no carrier. 0.6.3's sampler plugin (built for 26.06) is refused by this VPP, so flow export's VPP path needs a PacketFrame built from packetframe#403 or later (see [Installing](#installing-on-a-gateway)) |
 
 Pick the row for the firmware the gateway runs (`cat /etc/debian_version`).
 The bullseye build cannot install on UniFi OS 6.x: it depends on
@@ -94,14 +94,24 @@ These are the newest builds that have run on an EFG. The bullseye
 v26.10 build has not (the lab gateway runs UniFi OS 6.x), so UniFi OS
 5.x stays on v26.06 until it has.
 
-```sh
-# UniFi OS 6.x (Debian 13):
-gh release download vpp-v26.10-b4caea981-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
-# UniFi OS 5.x (Debian 11):
-gh release download vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
+A consumer's VPP plugins are built for one VPP version, and VPP refuses
+any other at load (VPP itself still starts). PacketFrame's sampler
+plugin, the VPP path of its flow export, is built for the release its
+`SOURCE.json` names: on v26.10 it needs a PacketFrame built from
+packetframe#403 or later, or flow export loses its VPP-path samples.
 
-# SHA256SUMS lists bare file names: check from inside vpp/.
-(cd vpp && sha256sum -c --ignore-missing SHA256SUMS)
+```sh
+# Pick the line for the gateway's firmware:
+tag=vpp-v26.10-b4caea981-octeon9-trixie-arm64    # UniFi OS 6.x (Debian 13)
+tag=vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64  # UniFi OS 5.x (Debian 11)
+
+# Into a fresh directory named for the release: with an earlier download
+# left in the same place, gh refuses to overwrite its SHA256SUMS, and
+# `./*.deb` below would hand apt both versions' packages.
+gh release download "$tag" -R unredacted/vpp-unifi -D "$tag"
+
+# SHA256SUMS lists bare file names: check from inside the directory.
+(cd "$tag" && sha256sum -c --ignore-missing SHA256SUMS)
 ```
 
 GitHub stores a `~` in an asset name as `.`. Releases built past a tag
@@ -109,7 +119,7 @@ GitHub stores a `~` in an asset name as `.`. Releases built past a tag
 stores them, so `SHA256SUMS` matches the downloaded files. The two
 releases published before that rename (`vpp-v26.06-8a556fbe1-octeon9-*`,
 2026-11-12) list `~` names; check them with
-`(cd vpp && sed 's/~/./' SHA256SUMS | sha256sum -c --ignore-missing)`.
+`(cd "$tag" && sed 's/~/./' SHA256SUMS | sha256sum -c --ignore-missing)`.
 The bytes are the same; only the names differ.
 
 Five traps, every one of which has cost real time on a router —
@@ -124,7 +134,7 @@ systemctl mask vpp.service
 #    vm.nr_hugepages=1024 assuming 2 MB pages; on UniFi's 64K-page
 #    kernel (512 MB default hugepages) that is a 512 GiB hugepage
 #    request on a 64 GB box, applied at install time.
-cd vpp && VPP_INSTALL_SKIP_SYSCTL=1 apt-get install -y ./*.deb
+cd "$tag" && VPP_INSTALL_SKIP_SYSCTL=1 apt-get install -y ./*.deb
 
 # 3. VERIFY no boot-time hugepage sysctl landed. The env var above
 #    skips `sysctl --system` at INSTALL time only — upstream's deb
