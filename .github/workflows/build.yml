@@ -4,7 +4,7 @@ name: VPP build
 # build under its own release tag, `vpp-<ref>-<platform>-<distro>-<arch>`,
 # or `vpp-<ref>-<commit:9>-<platform>-<distro>-<arch>` for a pin that builds
 # a commit on a release's stable branch (`branch` + `commit`; see
-# pins/efg.toml).
+# pins/efg-bullseye.toml).
 #
 # Why this repo exists: no VPP package exists for Debian 11 arm64
 # anywhere (fd.io ships noble/jammy arm64 + bookworm amd64; Debian has
@@ -13,7 +13,7 @@ name: VPP build
 # bullseye's dpkg can't even unpack its zstd members. Someone has to
 # link VPP against the fleet's libc; this is where.
 #
-# One pin file per gateway target under pins/ (see pins/efg.toml).
+# One pin file per gateway target under pins/ (see pins/efg-bullseye.toml).
 # The artifacts are a function of the PIN ALONE (plus this workflow's
 # build config), so the resolve job checks whether each pin's exact
 # artifact is already published and skips the build entirely if so —
@@ -46,7 +46,7 @@ on:
         type: boolean
         default: true
       pin:
-        description: 'Build only this pin file (e.g. pins/efg.toml; empty = all)'
+        description: 'Build only this pin file (e.g. pins/efg-bullseye.toml; empty = all)'
         type: string
         default: ''
 
