@@ -28,7 +28,7 @@ the exact upstream commit.
 | Gateway | SoC | Platform | Pin | Status |
 |---|---|---|---|---|
 | EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-bullseye.toml`](pins/efg-bullseye.toml) → `vpp-v26.10-b4caea981-octeon9-bullseye-arm64` | CI build verified; not yet run on an EFG. Last hardware-validated: `vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` (full-table FIB sync + readback verify on a reference EFG) |
-| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.10-b4caea981-octeon9-trixie-arm64` | CI build verified; not yet run on an EFG. Last hardware-validated: `vpp-v26.06-8a556fbe1-octeon9-trixie-arm64` (ran under PacketFrame on an EFG on 6.0.17: Ready, FIB readback verify) |
+| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.10-b4caea981-octeon9-trixie-arm64` | ran under PacketFrame on a lab EFG on 6.0.17 (2026-11-19: install over v26.06, attach with PacketFrame 0.6.3's v26.06 bindings, FIB readback verify over 179,700 routes, keep-VPP adoption, full teardown and cold start). No packets forwarded through VPP yet: the lab's member ports had no carrier |
 
 Pick the row for the firmware the gateway runs (`cat /etc/debian_version`).
 The bullseye build cannot install on UniFi OS 6.x: it depends on
@@ -90,14 +90,13 @@ remain there for link stability; everything new publishes here.
 Download the build for the gateway's Debian release (see
 [Supported gateways](#supported-gateways)):
 
-These are the last builds validated on hardware. The pins now build
-v26.10, whose octeon driver changed (see `pins/efg-bullseye.toml`); install a
-v26.10 build on a lab gateway first, and move these commands to it once
-it has run there.
+These are the newest builds that have run on an EFG. The bullseye
+v26.10 build has not (the lab gateway runs UniFi OS 6.x), so UniFi OS
+5.x stays on v26.06 until it has.
 
 ```sh
 # UniFi OS 6.x (Debian 13):
-gh release download vpp-v26.06-8a556fbe1-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
+gh release download vpp-v26.10-b4caea981-octeon9-trixie-arm64 -R unredacted/vpp-unifi -D vpp/
 # UniFi OS 5.x (Debian 11):
 gh release download vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64 -R unredacted/vpp-unifi -D vpp/
 
