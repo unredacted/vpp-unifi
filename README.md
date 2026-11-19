@@ -157,6 +157,13 @@ Operational guidance for running VPP under PacketFrame's supervision
 
 ## Bumping a pin
 
+Usually nothing here is by hand: every Monday
+`.github/workflows/vpp-upstream.yml` opens a PR when a pinned stable
+branch has moved, or when FD.io has tagged a newer release line, with
+the changed `.api` files listed (the ones packetframe vendors called
+out) and a build-and-verify run reported on it. Dependabot does the
+same for the GitHub Actions. By hand, the steps are:
+
 1. Edit the pin file (e.g. `pins/efg-bullseye.toml`). For a release's latest
    fixes, keep `ref` on the release tag and move `commit` to the new
    head of its `branch` (`stable/YYMM`), in full. For a new release,
