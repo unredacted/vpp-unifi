@@ -27,8 +27,8 @@ the exact upstream commit.
 
 | Gateway | SoC | Platform | Pin | Status |
 |---|---|---|---|---|
-| EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) → `vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` | validated end to end on a reference EFG (full-table FIB sync + readback verify) |
-| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.06-8a556fbe1-octeon9-trixie-arm64` | CI build verified; ran under PacketFrame on an EFG on 6.0.17 (Ready, FIB readback verify) |
+| EFG on UniFi OS 5.x (Debian 11) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg.toml`](pins/efg.toml) → `vpp-v26.10-b4caea981-octeon9-bullseye-arm64` | CI build verified; not yet run on an EFG. Last hardware-validated: `vpp-v26.06-8a556fbe1-octeon9-bullseye-arm64` (full-table FIB sync + readback verify on a reference EFG) |
+| EFG on UniFi OS 6.x (Debian 13) | Marvell CN9670 (CN96xx D0) | `octeon9` | [`pins/efg-trixie.toml`](pins/efg-trixie.toml) → `vpp-v26.10-b4caea981-octeon9-trixie-arm64` | CI build verified; not yet run on an EFG. Last hardware-validated: `vpp-v26.06-8a556fbe1-octeon9-trixie-arm64` (ran under PacketFrame on an EFG on 6.0.17: Ready, FIB readback verify) |
 
 Pick the row for the firmware the gateway runs (`cat /etc/debian_version`).
 The bullseye build cannot install on UniFi OS 6.x: it depends on
@@ -89,6 +89,11 @@ remain there for link stability; everything new publishes here.
 
 Download the build for the gateway's Debian release (see
 [Supported gateways](#supported-gateways)):
+
+These are the last builds validated on hardware. The pins now build
+v26.10, whose octeon driver changed (see `pins/efg.toml`); install a
+v26.10 build on a lab gateway first, and move these commands to it once
+it has run there.
 
 ```sh
 # UniFi OS 6.x (Debian 13):

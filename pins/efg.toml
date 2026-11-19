@@ -45,14 +45,14 @@ glibc_floor = "2.31"
 # Default to newest, not oldest. Newest gets security fixes and
 # upstream support; you drop back only when something forces you to,
 # and "might not build" was not a good enough reason — VPP's Makefile
-# in stable/2606 has explicit `debian-11` handling, so bullseye is a
+# (stable/2606, and still v26.10) has explicit `debian-11` handling, so bullseye is a
 # supported build host. (An earlier version of this file pinned 23.06
 # on the assumption that newer lines had dropped Debian 11. That was
 # inferred from fd.io's *package* matrix, which describes their CI,
 # not what the source can build. Checked, wrong, corrected.)
 #
 # That said, "install-dep succeeds" is NOT the same as "bullseye's
-# toolchain is new enough". 26.06 requires CMake >= 3.19 and bullseye
+# toolchain is new enough". 26.06 and 26.10 require CMake >= 3.19 and bullseye
 # ships 3.18.4, so the workflow installs upstream CMake before
 # building. Expect that supplementing to be the shape of any future
 # obstacle on this line: dependency PACKAGING still targets debian-11,
@@ -104,7 +104,9 @@ glibc_floor = "2.31"
 #     generic build never contained it;
 #   - it links marvell-octeon-roc, and octeon-roc v26.05's model
 #     table (unlike DPDK's stale copy) HAS the cn9670's stepping:
-#     MIDR (0x43, 0xB2, major=3, minor=0) = **CN96xx D0**;
+#     MIDR (0x43, 0xB2, major=3, minor=0) = **CN96xx D0**
+#     (still there in v26.09.01, the octeon-roc VPP v26.10 links;
+#     DPDK's copy still lacks it as of v26.11-rc3);
 #   - CN9K support is first-class (roc_model_is_cn9k() paths,
 #     PLATFORM_OCTEON9 defines).
 # Hence: ref back to latest stable, platform=octeon9. The native
@@ -115,22 +117,35 @@ glibc_floor = "2.31"
 #   - v26.06 generic: cnxk PMD fails PRE-mailbox — DPDK's
 #     drivers/common/cnxk/roc_model.c stops at CN96xx variant 2 and
 #     hard-fails unknown MIDR with no override. Upstreaming the D0
-#     entry to DPDK (sync from octeon-roc) is a courtesy fix, not our
-#     critical path.
+#     entry to DPDK (sync from octeon-roc) was considered and dropped:
+#     DPDK is not on our path, and fixes to dependencies stay out of
+#     upstream trackers (issue #1).
 #   - v25.10 / v24.10 / v23.06: same stale table, same failure, skip.
 #   - v22.02 generic: mailbox PASSES, rx queue setup fails on NPA
 #     mempool ops (above). The mailbox-proof artifact tag
 #     (vpp-v22.02-generic-bullseye-arm64) remains published on
 #     unredacted/packetframe, where these builds originally lived.
-ref = "v26.06"
+#
+# Moved from v26.06 to v26.10 (tagged 2026-10-28). Against the
+# 16 .api files PacketFrame vendors, only interface.api changed, and
+# only by adding messages (sw_interface_set_link_speed,
+# sw_interface_get_speed_capa and its reply): no message PacketFrame
+# speaks changed, so its attach-time CRC check is unaffected. The
+# octeon driver did change: per-thread, per-device auras; TX auras
+# cleaned up on teardown; drain-queue, port-start return value and flow
+# parsing fixes; settable link speed; octeon-roc 26.05 -> 26.09.01. None
+# of that was backported to stable/2606, and it is datapath code, so a
+# v26.10 build runs on a lab EFG before any production gateway takes it.
+# The last hardware-validated build is vpp-v26.06-8a556fbe1-octeon9-*.
+ref = "v26.10"
 
 # The release's maintenance fixes. FD.io has tagged no point release
 # (vYY.MM.N) since v22.10.1: fixes for a release land on its
 # `stable/YYMM` branch, and FD.io's own packages are built from that
-# branch (versioned like 26.06.0-16~g8a556fbe1). So `branch` names that
+# branch (versioned like 26.10.0-16~gb4caea981). So `branch` names that
 # stable branch and `commit` the exact commit on it to build, in full.
 # The workflow checks the commit is on `branch` and descends from `ref`,
-# and names the release after both (vpp-v26.06-8a556fbe1-...). The
+# and names the release after both (vpp-v26.10-b4caea981-...). The
 # branch moves; the commit is what makes the build reproducible, and
 # moving to newer fixes is a deliberate bump of `commit`.
 #
@@ -138,15 +153,19 @@ ref = "v26.06"
 # strict pin: the workflow fails if the tag resolves elsewhere (upstream
 # retag).
 #
-# 8a556fbe1 = v26.06 + 16 (stable/2606 head, 2026-10-29), no .api file
-# changed since v26.06. Among the fixes: an ip6-nd crash on an NS for a
-# link-local target when the interface has no link-local FIB (ca2a31d21);
-# NS source learning only after the target validates (e817a5b1e); VPP
-# time kept monotonic across wall-clock steps (8f426ed54); an os_panic on
-# ICMP errors with an untranslatable inner protocol (92e225303); TCP
-# header length checks in mss_clamp (f0bd32db7).
-branch = "stable/2606"
-commit = "8a556fbe14b58c72b7bfb86e650783b0a6fc00cc"
+# b4caea981 = v26.10 + 16 (stable/2610 head, 2026-11-18). Two touch
+# code: the punt-drop feature arc (d5679a54c) and ip6-nd no longer
+# learning the router's own addresses (9376905b9); the rest are CI and
+# docs. The one .api change, in ip.api, adds an error counter
+# (neighbor_advertisement_target_local), not a message, so no API CRC
+# moves. The fixes the previous pin (stable/2606 at 8a556fbe1) was
+# taken for are all on this branch too: the ip6-nd link-local NS crash
+# (7289cb00f), NS validation before learning (5eb79c9f2), monotonic VPP
+# time (ab5beac21), no os_panic on an untranslatable ICMP inner protocol
+# (380bd0d1f), and the mss_clamp TCP header checks (before the branch
+# point).
+branch = "stable/2610"
+commit = "b4caea9817032447f0ee29ffecec35b46a7143dd"
 
 # Build variant. Changing this produces a separately-tagged artifact;
 # variants coexist on the release page.

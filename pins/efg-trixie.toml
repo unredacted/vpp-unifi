@@ -34,7 +34,7 @@ arch = "arm64"
 glibc_floor = "2.41"
 
 [vpp]
-ref = "v26.06"
-branch = "stable/2606"
-commit = "8a556fbe14b58c72b7bfb86e650783b0a6fc00cc"
+ref = "v26.10"
+branch = "stable/2610"
+commit = "b4caea9817032447f0ee29ffecec35b46a7143dd"
 platform = "octeon9"
