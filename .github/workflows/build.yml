@@ -74,8 +74,24 @@ jobs:
     outputs:
       matrix: ${{ steps.pins.outputs.matrix }}
       any_build: ${{ steps.pins.outputs.any_build }}
+      packetframe_sha: ${{ steps.packetframe.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
+
+      # One PacketFrame commit for every gate job and the release notes: a
+      # branch that moved between two checkouts would have each gate pass a
+      # different commit, neither of which passed both.
+      - name: Resolve the PacketFrame ref to one commit
+        id: packetframe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.packetframe-ref || 'main' }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/unredacted/packetframe/commits/${REF}" --jq .sha)
+          echo "$sha" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::could not resolve packetframe ref '$REF'"; exit 1; }
+          echo "packetframe ${REF} = ${sha}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Parse pins and decide what needs building
         id: pins
@@ -972,6 +988,10 @@ jobs:
     container:
       image: debian:${{ matrix.distro }}
       options: --privileged
+    # This job runs PacketFrame's code, at whatever ref a dispatch names: it
+    # gets a token that can read and nothing else. Only `publish` writes.
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -979,7 +999,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: unredacted/packetframe
-          ref: ${{ inputs.packetframe-ref || 'main' }}
+          ref: ${{ needs.resolve.outputs.packetframe_sha }}
+          persist-credentials: false
 
       - uses: actions/download-artifact@v8
         with:
@@ -992,14 +1013,25 @@ jobs:
 
       # A packetframe ref whose action predates `vpp-debs` would only warn
       # about the input and test the VPP its SOURCE.json names instead: a
-      # pass that says nothing about this one. So check what ran.
-      - name: The plugin was tested against this VPP
+      # pass that says nothing about this build. Versions cannot tell them
+      # apart (a forced rebuild keeps the version), so compare contents:
+      # every file of each package the plugin builds and runs against, as
+      # installed, must be the file in this build's deb.
+      - name: The plugin was tested against this build's packages
         run: |
           set -euo pipefail
-          want=$(dpkg-deb -f "$(find /pkg -name 'vpp_*.deb' -print -quit)" Version)
-          have=$(dpkg-query -W -f='${Version}' vpp)
-          echo "candidate vpp $want; tested against vpp $have"
-          [ "$want" = "$have" ] || { echo "::error::the plugin was tested against vpp $have, not this build's $want (does packetframe@${{ inputs.packetframe-ref || 'main' }} have the vpp-debs input?)"; exit 1; }
+          for p in vpp libvppinfra libvppinfra-dev vpp-dev vpp-plugin-core; do
+            deb=$(find /pkg -name "${p}_*.deb" -print -quit)
+            [ -n "$deb" ] || { echo "::error::no ${p}_*.deb in the artifact"; exit 1; }
+            want=$(dpkg-deb -I "$deb" md5sums | sort)
+            # A multi-arch package's list is ${p}:arm64.md5sums; read whichever exists.
+            have=$({ cat "/var/lib/dpkg/info/${p}.md5sums" "/var/lib/dpkg/info/${p}:arm64.md5sums" 2>/dev/null || true; } | sort)
+            if [ -z "$want" ] || [ "$want" != "$have" ]; then
+              echo "::error::installed ${p} is not this build's (does packetframe@${{ needs.resolve.outputs.packetframe_sha }} have the sampler-plugin action's vpp-debs input?)"
+              exit 1
+            fi
+            echo "${p}: $(wc -l <<<"$want") files match this build's deb"
+          done
 
   # PacketFrame's vpp-offload speaks VPP's binary API through bindings
   # generated from vendored .api.json files, and refuses at attach any VPP
@@ -1014,11 +1046,15 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     runs-on: ubuntu-latest
+    # Runs PacketFrame's code too: read-only, like packetframe-plugin.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           repository: unredacted/packetframe
-          ref: ${{ inputs.packetframe-ref || 'main' }}
+          ref: ${{ needs.resolve.outputs.packetframe_sha }}
+          persist-credentials: false
 
       - uses: actions/download-artifact@v8
         with:
@@ -1085,7 +1121,7 @@ jobs:
             "" \
             "**One packaging deviation** (the only one): \`etc/sysctl.d/80-vpp.conf\` is removed from the \`vpp\` .deb. Applied at every boot, its \`vm.nr_hugepages=1024\` (written for 2 MB pages) is a 512 GiB hugepage request on 64K-page UniFi kernels — it bricked a 64 GB EFG on 2026-08-21. Hugepage sizing belongs to the consumer at attach; see the README's install section." \
             "" \
-            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}. Against unredacted/packetframe@${{ inputs.packetframe-ref || 'main' }}: its VPP sampler plugin builds and passes its live-VPP smoke test in this VPP, and its binary-API bindings regenerate unchanged from this VPP's API bundle." \
+            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}. Against unredacted/packetframe@${{ needs.resolve.outputs.packetframe_sha }} (${{ inputs.packetframe-ref || 'main' }}): its VPP sampler plugin builds and passes its live-VPP smoke test in this VPP, and its binary-API bindings regenerate unchanged from this VPP's API bundle." \
             "" \
             "\`vpp-api-json.tar.gz\` is the API-definition bundle for binary-API codegen (consumed by unredacted/packetframe's vpp-offload module); it is published separately so codegen does not download the .debs." \
             "" \
