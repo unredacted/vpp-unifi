@@ -170,9 +170,11 @@ Operational guidance for running VPP under PacketFrame's supervision
    the target distro (~45 min), verifies, and publishes the new tag.
    **It publishes nothing PacketFrame does not work with:** before the
    publish job, and gating it, PacketFrame's sampler plugin is built
-   against the new debs and passes its live-VPP smoke test, and
+   against the new debs and passes its live-VPP smoke test,
    PacketFrame's binary-API bindings must regenerate unchanged from the
-   new `.api` bundle. A bump that fails either waits for a PacketFrame
+   new `.api` bundle, and its vpp-offload must still parse the new VPP's
+   CLI output (FIB summaries, error counters, interface counters). A
+   bump that fails any of them waits for a PacketFrame
    branch that fixes it; dispatch the build with `packetframe-ref` set
    to that branch (procedure: packetframe's
    `crates/modules/vpp-offload/vpp-api/README.md`, "The gate").
