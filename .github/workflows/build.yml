@@ -26,9 +26,11 @@ name: VPP build
 # Nothing publishes that PacketFrame does not work with. Before the
 # publish job, and gating it, the packetframe-* jobs run PacketFrame's own
 # checks on the debs just built: its VPP sampler plugin builds and passes
-# its live-VPP smoke test, and its binary-API bindings regenerate
-# unchanged from this VPP's .api bundle. The checks live in packetframe
-# (.github/actions/sampler-plugin, .github/scripts/vpp-api-drift.sh), at
+# its live-VPP smoke test, its binary-API bindings regenerate unchanged
+# from this VPP's .api bundle, and its vpp-offload parsers read this VPP's
+# CLI output as it means. The checks live in packetframe
+# (.github/actions/sampler-plugin, .github/scripts/vpp-api-drift.sh,
+# .github/actions/vpp-cli-compat), at
 # `main` unless a dispatch names another ref: the way through for a VPP
 # that needs a PacketFrame change first (packetframe's
 # crates/modules/vpp-offload/vpp-api/README.md, "The gate").
@@ -1071,6 +1073,61 @@ jobs:
           [ -n "$bundle" ] || { echo "::error::no vpp-api-json.tar.gz in the artifact"; exit 1; }
           bash .github/scripts/vpp-api-drift.sh "$bundle"
 
+  # PacketFrame's vpp-offload also reads the TEXT of a few CLI commands
+  # (the FIB summaries keep-VPP adoption fingerprints, show errors,
+  # neighbor stats, interface counters), which a release can reword with
+  # no API or CRC change. PacketFrame's own action starts this VPP with no
+  # NIC, programs routes and traffic, and requires each parser to recover
+  # them; privileged for VPP itself. Read-only, like packetframe-plugin.
+  packetframe-cli:
+    name: PacketFrame's CLI parsers against this VPP (${{ matrix.distro }})
+    needs: [resolve, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:${{ matrix.distro }}
+      options: --privileged
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: unredacted/packetframe
+          ref: ${{ needs.resolve.outputs.packetframe_sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.tag }}
+          path: /pkg
+
+      - uses: ./.github/actions/vpp-cli-compat
+        with:
+          vpp-debs: /pkg
+
+      # As in packetframe-plugin: a pass means something only if the VPP
+      # it ran against is this build's, file for file.
+      - name: The parsers were tested against this build's packages
+        run: |
+          set -euo pipefail
+          for p in vpp libvppinfra libvppinfra-dev vpp-dev vpp-plugin-core; do
+            deb=$(find /pkg -name "${p}_*.deb" -print -quit)
+            [ -n "$deb" ] || { echo "::error::no ${p}_*.deb in the artifact"; exit 1; }
+            want=$(dpkg-deb -I "$deb" md5sums | sort)
+            have=$({ cat "/var/lib/dpkg/info/${p}.md5sums" "/var/lib/dpkg/info/${p}:arm64.md5sums" 2>/dev/null || true; } | sort)
+            if [ -z "$want" ] || [ "$want" != "$have" ]; then
+              echo "::error::installed ${p} is not this build's (does packetframe@${{ needs.resolve.outputs.packetframe_sha }} have the vpp-cli-compat action?)"
+              exit 1
+            fi
+            echo "${p}: $(wc -l <<<"$want") files match this build's deb"
+          done
+
   # Publishing is a SEPARATE job gated on verify-package, not a final
   # step of `build`. It used to be the latter, which meant the .debs
   # were downloadable before anything had tried installing them: a
@@ -1081,7 +1138,7 @@ jobs:
     name: Publish release
     # PacketFrame's checks are gates, not reports: a VPP it does not work
     # with is never a release, so it can never be vendored or installed.
-    needs: [resolve, build, verify-package, packetframe-plugin, packetframe-api]
+    needs: [resolve, build, verify-package, packetframe-plugin, packetframe-api, packetframe-cli]
     # A push-triggered run leaves `inputs.publish` empty, which coerces
     # equal to `false` — so the PRIMARY automatic trigger would spend
     # the whole build and publish nothing, leaving consumers' release
@@ -1121,7 +1178,7 @@ jobs:
             "" \
             "**One packaging deviation** (the only one): \`etc/sysctl.d/80-vpp.conf\` is removed from the \`vpp\` .deb. Applied at every boot, its \`vm.nr_hugepages=1024\` (written for 2 MB pages) is a 512 GiB hugepage request on 64K-page UniFi kernels — it bricked a 64 GB EFG on 2026-08-21. Hugepage sizing belongs to the consumer at attach; see the README's install section." \
             "" \
-            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}. Against unredacted/packetframe@${{ needs.resolve.outputs.packetframe_sha }} (${{ inputs.packetframe-ref || 'main' }}): its VPP sampler plugin builds and passes its live-VPP smoke test in this VPP, and its binary-API bindings regenerate unchanged from this VPP's API bundle." \
+            "Verified in CI before publication: glibc symbol floor ≤ ${{ matrix.glibc_floor }}, no unresolved shared libraries, Octeon driver present, and the .debs install cleanly into a stock ${{ matrix.distro }}. Against unredacted/packetframe@${{ needs.resolve.outputs.packetframe_sha }} (${{ inputs.packetframe-ref || 'main' }}): its VPP sampler plugin builds and passes its live-VPP smoke test in this VPP, its binary-API bindings regenerate unchanged from this VPP's API bundle, and its vpp-offload parsers read this VPP's CLI output as programmed." \
             "" \
             "\`vpp-api-json.tar.gz\` is the API-definition bundle for binary-API codegen (consumed by unredacted/packetframe's vpp-offload module); it is published separately so codegen does not download the .debs." \
             "" \
