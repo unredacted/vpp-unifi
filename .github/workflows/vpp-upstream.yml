@@ -11,9 +11,15 @@ name: VPP upstream watch
 #     VPP's API CRCs at attach, so an API change needs a PacketFrame build
 #     generated against it), and start a build-and-verify run of the PR
 #     branch (publish off);
-#   - when FD.io has tagged a newer release line than a pin's `ref`, open an
-#     issue rather than a PR: a new line changes VPP's API, and moving to it
-#     starts with PacketFrame.
+#   - when FD.io has tagged a newer release line than a pin's `ref`, open a
+#     PR that moves every pin on that `ref` to the new line (its
+#     `stable/YYMM` head, or the bare tag while that branch does not exist
+#     or does not descend from the tag), list the changed .api files with
+#     the ones PacketFrame vendors called out, and start the same
+#     build-and-verify run. Merging publishes a release and moves nothing on
+#     a gateway: PacketFrame re-vendors against it and a lab gateway runs it
+#     first. Once merged, the pins name the new stable branch and the step
+#     above follows it.
 #
 # A PR opened with GITHUB_TOKEN gets no `pull_request` runs (or only ones
 # awaiting approval), and checks from `workflow_dispatch` runs are not shown
@@ -147,6 +153,169 @@ jobs:
             git switch -q --detach origin/main
           done
 
+      - name: Propose moves to a newer VPP release line
+        shell: bash
+        env:
+          # Where PacketFrame keeps the .api.json files it generates code
+          # from: a changed .api file matters to it only if it is one of
+          # these. Best effort: without the listing the PR lists every change.
+          PF_VENDORED: repos/unredacted/packetframe/contents/crates/modules/vpp-offload/vpp-api
+        run: |
+          set -euo pipefail
+          field() { grep -E "^\s*$1\s*=" "$2" | head -1 | cut -d'"' -f2 || true; }
+          # setf KEY VALUE PIN ANCHOR: rewrite `KEY = "..."`, or add it after
+          # the ANCHOR key's line when the pin has none (and VALUE is set).
+          setf() {
+            if grep -Eq "^[[:space:]]*$1[[:space:]]*=" "$3"; then
+              sed -i -E "s|^([[:space:]]*$1[[:space:]]*=[[:space:]]*\")[^\"]*(\")|\1$2\2|" "$3"
+            elif [ -n "$2" ]; then
+              sed -i -E "s|^([[:space:]]*)$4([[:space:]]*=.*)$|&\n\1$1 = \"$2\"|" "$3"
+            fi
+            if [ "$(field "$1" "$3")" != "$2" ]; then
+              echo "::error::$3: could not set $1 to '$2'"; exit 1
+            fi
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Release LINES only (vYY.MM): a point tag like v26.06.1 is the same
+          # line as v26.06, whose maintenance the stable-branch step covers.
+          latest=$(git ls-remote --tags "$UPSTREAM" 'refs/tags/v*' \
+            | sed -E 's#.*refs/tags/##; /\^\{\}$/d' \
+            | grep -E '^v[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          [ -n "$latest" ] || { echo "::warning::no release tags read from $UPSTREAM"; exit 0; }
+
+          # Grouped by release LINE, not exact ref: pins on v22.10 and on its
+          # point tag v22.10.1 move in one PR, whose topic names the line.
+          relline() { grep -oE '^v[0-9]+\.[0-9]+' <<<"$1" || true; }
+          for p in pins/*.toml; do
+            [ -n "$(relline "$(field ref "$p")")" ] || echo "::warning::$p: ref '$(field ref "$p")' is not a release tag"
+          done
+          lines=$(for p in pins/*.toml; do relline "$(field ref "$p")"; done | sed '/^$/d' | sort -u)
+          for line in $lines; do
+            if [ "$(printf '%s\n%s\n' "$line" "$latest" | sort -V | tail -1)" = "$line" ]; then
+              echo "$line is the newest VPP release line"; continue
+            fi
+            # One PR per move; a closed one is a decision, not a reason to ask again.
+            topic="vpp-upstream/line-${line}-to-${latest}"
+            if [ "$(gh pr list --head "$topic" --state all --json number --jq length)" != 0 ]; then
+              echo "$line: a PR moving to $latest already exists ($topic)"; continue
+            fi
+
+            # The commit the tag names (an annotated tag's ^{} line, else the tag itself).
+            tagls=$(git ls-remote --tags "$UPSTREAM" "refs/tags/$latest" "refs/tags/$latest^{}")
+            tag_sha=$(awk '/\^\{\}$/ { print $1 }' <<<"$tagls")
+            [ -n "$tag_sha" ] || tag_sha=$(awk 'NR == 1 { print $1 }' <<<"$tagls")
+            [ -n "$tag_sha" ] || { echo "::warning::could not resolve $latest"; continue; }
+
+            # The new line's maintenance branch, when it exists and descends from the tag.
+            line_branch="stable/$(sed -E 's/^v([0-9]+)\.([0-9]+)$/\1\2/' <<<"$latest")"
+            branch=$line_branch
+            head=$(git ls-remote "$UPSTREAM" "refs/heads/$branch" | cut -f1)
+            if [ -n "$head" ]; then
+              behind=$(gh api "repos/FDio/vpp/compare/${tag_sha}...${head}" --jq .behind_by)
+              if [ "$behind" != 0 ]; then
+                echo "::warning::$branch head ${head:0:9} does not descend from $latest; proposing the bare tag"
+                head=""
+              fi
+            fi
+            [ -n "$head" ] || branch=""
+            build=${head:-$tag_sha}
+
+            # The pins on this line, and what each builds now: its stable-branch
+            # commit, else its tag. Pins can differ (separate gateways, or a
+            # point tag), so every distinct source is diffed, not just one.
+            pins=(); olds=()
+            for p in pins/*.toml; do
+              [ "$(relline "$(field ref "$p")")" = "$line" ] || continue
+              pins+=("$p")
+              o=$(field commit "$p")
+              if [ -z "$o" ] || [ -z "$(field branch "$p")" ]; then
+                r=$(field ref "$p")
+                o=$(git ls-remote --tags "$UPSTREAM" "refs/tags/$r" "refs/tags/$r^{}" | awk '{ print $1 }' | tail -1)
+              fi
+              [ -n "$o" ] || { echo "::error::$p: could not resolve what it builds now"; exit 1; }
+              olds+=("$o")
+            done
+            mapfile -t olds < <(printf '%s\n' "${olds[@]}" | sort -u)
+            refs_now=$(for p in "${pins[@]}"; do field ref "$p"; done | sort -u | paste -sd, -)
+
+            # Every changed .api file, from a shallow, blob-free fetch of the
+            # trees; blobs are fetched only for the files diffed below. The
+            # union over every current source: a change one pin already has
+            # can still be new to another.
+            work=$(mktemp -d)
+            git -C "$work" init -q
+            git -C "$work" fetch -q --depth 1 --filter=blob:none "$UPSTREAM" "${olds[@]}" "$build"
+            mapfile -t api < <(for o in "${olds[@]}"; do git -C "$work" diff --name-only "$o" "$build" -- '*.api'; done | sort -u)
+            vendored=$(gh api "$PF_VENDORED" --jq '.[].name | select(endswith(".api.json")) | rtrimstr(".json")' 2>/dev/null || true)
+            pf=(); other=()
+            for f in "${api[@]}"; do
+              if [ -n "$vendored" ] && grep -qxF "$(basename "$f")" <<<"$vendored"; then pf+=("$f"); else other+=("$f"); fi
+            done
+
+            git switch -q -c "$topic" origin/main
+            for p in "${pins[@]}"; do
+              setf ref "$latest" "$p" ref
+              setf branch "$branch" "$p" ref
+              setf commit "$head" "$p" branch
+            done
+            git add "${pins[@]}"
+            what="${latest}${head:+ + ${branch} at ${head:0:9}}"
+            git commit -q -m "pins: move ${refs_now} to VPP ${what}" \
+              -m "Proposed by .github/workflows/vpp-upstream.yml: FD.io tagged ${latest}."
+            git push -q origin "$topic"
+
+            body_file=$(mktemp)
+            {
+              echo "FD.io has tagged [\`${latest}\`](${UPSTREAM}/releases/tag/${latest}). This moves every pin on the ${line} line (${pins[*]}, now on ${refs_now}) to ${what}."
+              if [ -z "$head" ]; then
+                echo
+                echo "\`${line_branch}\` does not exist yet (or does not descend from the tag), so this builds the tag alone. Once it exists, set \`branch\` and \`commit\` by hand; from then on the stable-branch watch follows it."
+              fi
+              echo
+              echo "### API"
+              echo
+              if [ -z "$vendored" ]; then
+                echo "PacketFrame's vendored file list could not be read, so every changed \`.api\` file is listed below."
+              elif [ "${#pf[@]}" = 0 ]; then
+                echo "**No \`.api\` file PacketFrame vendors changed**, so its attach-time CRC check is unaffected; its re-vendor is paperwork."
+              else
+                echo "**Changed files PacketFrame vendors:** $(printf '`%s` ' "${pf[@]}")"
+                echo
+                for o in "${olds[@]}"; do
+                  [ "${#olds[@]}" = 1 ] || echo "From \`${o:0:9}\`:"
+                  echo '```'
+                  git -C "$work" diff --stat "$o" "$build" -- "${pf[@]}"
+                  echo '```'
+                done
+                echo
+                echo "A changed file is not yet wire drift: PacketFrame's re-vendor regenerates \`generated.rs\`, and only a diff there (a whitelisted message changed) needs a new PacketFrame release."
+              fi
+              echo
+              echo "<details><summary>${#api[@]} changed .api file(s) in all</summary>"
+              echo
+              if [ "${#api[@]}" = 0 ]; then echo "- none"; else printf -- '- `%s`\n' "${api[@]}"; fi
+              echo
+              echo "</details>"
+              echo
+              echo "### Before merging"
+              echo
+              echo "- The build-and-verify run this workflow started on the branch (publish off) passed, and \`Pin consistency\` passed."
+              echo "- The pins' comments describe the new line: what changed for the hardware (the octeon driver, octeon-roc), and that it is not yet run on a gateway. The README's Supported gateways table names the new tags."
+              echo
+              echo "Merging publishes \`vpp-${latest}${head:+-${head:0:9}}-<platform>-<distro>-<arch>\` for each pin and moves nothing on a gateway. Then PacketFrame re-vendors against it, and a lab gateway runs it before any production one."
+              echo
+              echo "Opened by [VPP upstream watch](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+            } > "$body_file"
+            gh pr create --base main --head "$topic" \
+              --title "pins: move ${line} to VPP ${latest}" --body-file "$body_file"
+            gh workflow run build.yml --ref "$topic" -f publish=false -f force=false -f pin=
+            gh workflow run pins.yml --ref "$topic"
+            echo "$topic $(git rev-parse HEAD)" >> "$RUNNER_TEMP/proposed"
+            git switch -q --detach origin/main
+          done
+
       - name: Report the checks on each proposed PR
         if: always()
         shell: bash
@@ -182,35 +351,3 @@ jobs:
               fi
             done
           done < "$RUNNER_TEMP/proposed"
-
-      - name: Report newer VPP release lines
-        shell: bash
-        run: |
-          set -euo pipefail
-          field() { grep -E "^\s*$1\s*=" "$2" | head -1 | cut -d'"' -f2 || true; }
-          # Release LINES only (vYY.MM): a point tag like v26.06.1 is the same
-          # line as v26.06, whose maintenance the stable-branch step covers.
-          latest=$(git ls-remote --tags "$UPSTREAM" 'refs/tags/v*' \
-            | sed -E 's#.*refs/tags/##; /\^\{\}$/d' \
-            | grep -E '^v[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          [ -n "$latest" ] || { echo "::warning::no release tags read from $UPSTREAM"; exit 0; }
-          refs=$(for p in pins/*.toml; do field ref "$p" | grep -oE '^v[0-9]+\.[0-9]+'; done | sort -u)
-          for ref in $refs; do
-            newest=$(printf '%s\n%s\n' "$ref" "$latest" | sort -V | tail -1)
-            if [ "$newest" = "$ref" ]; then
-              echo "$ref is the newest VPP release line"; continue
-            fi
-            title="VPP ${latest} is released (pins build ${ref})"
-            if [ "$(gh issue list --state all --search "in:title \"${title}\"" --json title --jq "[.[] | select(.title == \"${title}\")] | length")" != 0 ]; then
-              echo "issue already exists: $title"; continue
-            fi
-            body_file=$(mktemp)
-            {
-              echo "FD.io has tagged [\`${latest}\`](${UPSTREAM}/releases/tag/${latest}); the pins build \`${ref}\`."
-              echo
-              echo "A new release line changes VPP's binary API, and PacketFrame's vpp-offload checks the API CRCs at attach. Moving starts in PacketFrame: generate its VPP bindings against the new line's \`.api\` definitions, test them on hardware, then bump every pin for a gateway together here (\`ref\`, and \`branch\` to the new \`stable/YYMM\` with its \`commit\`, or drop them to build the tag alone)."
-              echo
-              echo "Opened by [VPP upstream watch](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
-            } > "$body_file"
-            gh issue create --title "$title" --body-file "$body_file"
-          done

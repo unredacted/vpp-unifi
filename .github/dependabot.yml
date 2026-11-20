@@ -4,7 +4,8 @@ version: 2
 # use. It cannot read the VPP pins (pins/*.toml are this repo's own format,
 # and VPP is tracked by an upstream git branch and commit, not a package),
 # so .github/workflows/vpp-upstream.yml watches FDio/vpp instead and opens
-# the same kind of PR when a pinned stable branch moves.
+# the same kind of PR when a pinned stable branch moves or FD.io tags a
+# newer release line.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
